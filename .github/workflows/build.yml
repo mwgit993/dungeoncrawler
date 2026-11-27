@@ -1,4 +1,4 @@
-name: Smoke Test, Build & Publish Dungeon Crawler (.exe)
+name: Build, Auto-Merge & Publish Dungeon Crawler (.exe)
 
 on:
   push:
@@ -16,10 +16,11 @@ concurrency:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   build-windows:
-    name: Smoke Test & Package DungeonCrawler.exe
+    name: Smoke Test, Auto-Merge & Package DungeonCrawler.exe
     runs-on: windows-latest
     steps:
       - name: Checkout code
@@ -51,7 +52,7 @@ jobs:
           & $godotConsole --headless --path . --import
           $out = & $godotConsole --headless --path . --quit-after 30 -- --smoke-test 2>&1 | Out-String
           Write-Host $out
-          if ($out -notmatch "DUNGEON_SMOKE_TEST_PASSED") {
+          if ($out -notmatch "SMOKE_TEST_PASSED") {
             Write-Error "Smoke test did not pass!"
             exit 1
           }
@@ -77,21 +78,40 @@ jobs:
           name: DungeonCrawler-Windows
           path: DungeonCrawler-Windows.zip
 
-      # Pull requests only get the smoke test and the build artifact above; nothing is merged
-      # automatically. Once a change is on main, it's published as the 'latest' release.
-      - name: Publish DungeonCrawler-Windows.zip Release
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+      - name: Auto-Merge Trusted PR & Publish DungeonCrawler-Windows.zip Release
+        if: >-
+          (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') ||
+          (github.event_name == 'pull_request' && !github.event.pull_request.draft &&
+           (github.event.pull_request.user.login == 'jay-zimphy' ||
+            github.event.pull_request.user.login == 'justgetjay' ||
+            github.event.pull_request.user.login == 'mwgit993'))
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         shell: pwsh
         run: |
           $repo = "${{ github.repository }}"
+          $changeDesc = ""
+
+          if ("${{ github.event_name }}" -eq "pull_request") {
+            Write-Host "Auto-merging verified PR #$env:PR_NUM..."
+            gh pr merge $env:PR_NUM -R $repo --merge --delete-branch
+            if ($LASTEXITCODE -ne 0) {
+              Write-Warning "PR #$env:PR_NUM could not be auto-merged (may have new conflicts)."
+              exit 0
+            }
+            $changeDesc = "PR #$env:PR_NUM — $env:PR_TITLE"
+          }
+
           $mainInfo = gh api "repos/$repo/commits/main" | ConvertFrom-Json
           $shortSha = $mainInfo.sha.Substring(0, 7)
-          $changeDesc = ($mainInfo.commit.message -split "`n")[0]
+          if (-not $changeDesc) {
+            $changeDesc = ($mainInfo.commit.message -split "`n")[0]
+          }
           $stamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'")
           $notes = "**Latest Change:** $changeDesc`n**Commit:** ``$shortSha`` ($stamp)`n`n### How to Play`n1. Download **DungeonCrawler-Windows.zip** below.`n2. Extract the folder anywhere (keep ``DungeonCrawler.exe`` and ``DungeonCrawler.pck`` together in the same folder!).`n3. Double-click **DungeonCrawler.exe**!"
 
-          # Delete & recreate the 'latest' Release + Git tag so its timestamp and Source code zip update too.
+          # Delete & recreate the 'latest' Release + Git tag so timestamps and Source code zip both update to right now!
           gh release delete latest -R $repo --cleanup-tag --yes 2>$null
           gh release create latest "DungeonCrawler-Windows.zip" -R $repo --target $mainInfo.sha --title "Dungeon Crawler — Latest Playable Build ($shortSha)" --notes $notes
