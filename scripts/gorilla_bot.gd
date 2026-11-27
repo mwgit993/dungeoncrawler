@@ -1,0 +1,534 @@
+class_name GorillaBot
+extends CharacterBody3D
+
+## The player: a gorilla robot that smashes with its arms and fires a plasma cannon from its mouth.
+## Player 1 listens to keyboard + mouse and the first controller; co-op players each own a
+## controller. The model is built from boxes and animated in code (knuckle-walk, punches, slam).
+##
+## Keyboard/mouse: WASD move, mouse aims, left click smash, right click mouth cannon, Space dash,
+## Q repair kit, E interact.
+## Controller: left stick move, right stick aim, X / RB smash, B / RT cannon, A dash, LB repair
+## kit, Y interact.
+
+signal died(bot: GorillaBot)
+
+const RADIUS: float = 0.55
+const DEADZONE: float = 0.22
+
+var slot: int = 0
+var kbm: bool = true
+var pad: int = -1
+var color: Color = Color.ORANGE
+var level: LevelMap
+
+var hp: float = 100.0
+var max_hp: float = 100.0
+var shield: float = 0.0
+var energy: float = 100.0
+var energy_max: float = 100.0
+var alive: bool = true
+var input_enabled: bool = true
+var aim: Vector3 = Vector3(0.0, 0.0, 1.0)
+var interact_pressed: bool = false   # true for the one step interact was pressed
+var pause_pressed: bool = false
+var respawn_left: float = 0.0
+var scripted: bool = false           # smoke test: read `sim` instead of devices
+var sim: Dictionary = {}
+var using_pad: bool = false          # last input came from the controller (for button prompts)
+
+var _dash_t: float = 0.0
+var _dash_cd: float = 0.0
+var _dash_dir: Vector3 = Vector3.ZERO
+var _melee_cd: float = 0.0
+var _combo: int = 0
+var _combo_t: float = 0.0
+var _cannon_cd: float = 0.0
+var _regen_delay: float = 0.0
+var _iframes: float = 0.0
+var _prev: Dictionary = {}
+var _mouse_last: Vector2 = Vector2(-1.0, -1.0)
+var _use_mouse: bool = true
+
+# Model and animation state.
+var _model: Node3D
+var _torso: Node3D
+var _head: Node3D
+var _arm_l: Node3D
+var _arm_r: Node3D
+var _leg_l: Node3D
+var _leg_r: Node3D
+var _mouth: MeshInstance3D
+var _mouth_mat: StandardMaterial3D
+var _body_parts: Array[MeshInstance3D] = []
+var _body_mats: Array[Material] = []
+var _walk: float = 0.0
+var _punch_t: float = 0.0
+var _punch_side: int = 0
+var _slam_t: float = 0.0
+var _fire_t: float = 0.0
+var _flash_t: float = 0.0
+var _yaw: float = 0.0
+var _down_t: float = 0.0
+
+
+func setup(lvl: LevelMap, player_slot: int, uses_kbm: bool, pad_id: int) -> void:
+	level = lvl
+	slot = player_slot
+	kbm = uses_kbm
+	pad = pad_id
+	color = Art.PLAYER_COLORS[slot % Art.PLAYER_COLORS.size()]
+	name = "Player%d" % (slot + 1)
+	motion_mode = CharacterBody3D.MOTION_MODE_FLOATING
+	collision_layer = 2
+	collision_mask = 1
+	var cs: CollisionShape3D = CollisionShape3D.new()
+	var cap: CapsuleShape3D = CapsuleShape3D.new()
+	cap.radius = RADIUS
+	cap.height = 1.9
+	cs.shape = cap
+	cs.position = Vector3(0.0, 0.95, 0.0)
+	add_child(cs)
+	_build_model()
+	reset_stats()
+
+
+## Full HP and energy, with the current upgrades applied.
+func reset_stats() -> void:
+	max_hp = Game.max_hp()
+	hp = max_hp
+	energy_max = Game.energy_max()
+	energy = energy_max
+	shield = 0.0
+	alive = true
+	_iframes = 0.0
+	_dash_t = 0.0
+	_down_t = 0.0
+	if _model != null:
+		_model.rotation.x = 0.0
+		_model.position.y = 0.0
+
+
+func move_level(lvl: LevelMap, pos: Vector3) -> void:
+	level = lvl
+	global_position = pos
+	velocity = Vector3.ZERO
+
+
+# --- Model ------------------------------------------------------------------------------
+
+func _build_model() -> void:
+	var metal: StandardMaterial3D = Art.mat(Color(0.46, 0.49, 0.56))
+	var dark: StandardMaterial3D = Art.mat(Color(0.2, 0.22, 0.27))
+	var silver: StandardMaterial3D = Art.mat(Color(0.78, 0.8, 0.84))
+	var team: StandardMaterial3D = Art.mat(color)
+	var eye: StandardMaterial3D = Art.mat(Color(0.4, 0.95, 1.0), 2.4)
+	_mouth_mat = StandardMaterial3D.new()
+	_mouth_mat.albedo_color = Color(1.0, 0.55, 0.15)
+	_mouth_mat.emission_enabled = true
+	_mouth_mat.emission = Color(1.0, 0.55, 0.15)
+	_mouth_mat.emission_energy_multiplier = 1.0
+	_mouth_mat.diffuse_mode = BaseMaterial3D.DIFFUSE_TOON
+	_model = Node3D.new()
+	add_child(_model)
+	Art.blob_shadow(self, 0.95)
+	# Hips and legs.
+	_body(Art.part(_model, Art.box(Vector3(0.7, 0.3, 0.45)), dark, Vector3(0.0, 0.78, -0.12)))
+	_leg_l = _pivot(_model, Vector3(-0.27, 0.78, -0.12))
+	_leg_r = _pivot(_model, Vector3(0.27, 0.78, -0.12))
+	for leg: Node3D in [_leg_l, _leg_r]:
+		_body(Art.part(leg, Art.box(Vector3(0.3, 0.7, 0.32)), metal, Vector3(0.0, -0.35, 0.0)))
+		_body(Art.part(leg, Art.box(Vector3(0.36, 0.14, 0.48)), dark, Vector3(0.0, -0.71, 0.07)))
+	# Hunched torso.
+	_torso = _pivot(_model, Vector3(0.0, 0.88, -0.05))
+	_torso.rotation.x = 0.38
+	_body(Art.part(_torso, Art.box(Vector3(1.15, 0.85, 0.78)), metal, Vector3(0.0, 0.45, 0.0)))
+	_body(Art.part(_torso, Art.box(Vector3(1.0, 0.55, 0.12)), silver, Vector3(0.0, 0.55, -0.42)))
+	_body(Art.part(_torso, Art.box(Vector3(0.68, 0.42, 0.08)), team, Vector3(0.0, 0.42, 0.41)))
+	for s: float in [-1.0, 1.0]:
+		_body(Art.part(_torso, Art.box(Vector3(0.48, 0.42, 0.55)), metal, Vector3(0.74 * s, 0.72, 0.0)))
+		_body(Art.part(_torso, Art.box(Vector3(0.5, 0.1, 0.57)), team, Vector3(0.74 * s, 0.95, 0.0)))
+		Art.part(_torso, Art.box(Vector3(0.14, 0.14, 0.06)), Art.mat(color, 1.6), Vector3(0.3 * s, 0.72, -0.47))
+	# Head sits low and forward, gorilla style.
+	_head = _pivot(_torso, Vector3(0.0, 0.82, 0.36))
+	_body(Art.part(_head, Art.box(Vector3(0.56, 0.44, 0.5)), metal, Vector3.ZERO))
+	_body(Art.part(_head, Art.box(Vector3(0.62, 0.13, 0.12)), dark, Vector3(0.0, 0.16, 0.26)))
+	Art.part(_head, Art.box(Vector3(0.44, 0.07, 0.04)), eye, Vector3(0.0, 0.06, 0.27))
+	_body(Art.part(_head, Art.box(Vector3(0.46, 0.17, 0.14)), dark, Vector3(0.0, -0.14, 0.24)))
+	_mouth = Art.part(_head, Art.box(Vector3(0.28, 0.08, 0.04)), _mouth_mat, Vector3(0.0, -0.14, 0.32))
+	# Long arms that reach the ground.
+	_arm_l = _pivot(_torso, Vector3(-0.78, 0.66, 0.02))
+	_arm_r = _pivot(_torso, Vector3(0.78, 0.66, 0.02))
+	for arm: Node3D in [_arm_l, _arm_r]:
+		_body(Art.part(arm, Art.box(Vector3(0.32, 0.66, 0.34)), metal, Vector3(0.0, -0.33, 0.0)))
+		_body(Art.part(arm, Art.box(Vector3(0.42, 0.62, 0.44)), dark, Vector3(0.0, -0.92, 0.04)))
+		_body(Art.part(arm, Art.box(Vector3(0.52, 0.42, 0.52)), metal, Vector3(0.0, -1.38, 0.08)))
+		_body(Art.part(arm, Art.box(Vector3(0.54, 0.1, 0.54)), team, Vector3(0.0, -1.16, 0.08)))
+
+
+func _pivot(parent: Node3D, pos: Vector3) -> Node3D:
+	var n: Node3D = Node3D.new()
+	n.position = pos
+	parent.add_child(n)
+	return n
+
+
+func _body(mi: MeshInstance3D) -> void:
+	_body_parts.append(mi)
+	_body_mats.append(mi.material_override)
+
+
+# --- Input ------------------------------------------------------------------------------
+
+func _read_input() -> Dictionary:
+	if scripted:
+		return sim.duplicate()
+	var inp: Dictionary = {"move": Vector2.ZERO, "melee": false, "cannon": false, "dash": false,
+		"interact": false, "kit": false, "pause": false}
+	var mv: Vector2 = Vector2.ZERO
+	if kbm:
+		if Input.is_physical_key_pressed(KEY_A) or Input.is_physical_key_pressed(KEY_LEFT):
+			mv.x -= 1.0
+		if Input.is_physical_key_pressed(KEY_D) or Input.is_physical_key_pressed(KEY_RIGHT):
+			mv.x += 1.0
+		if Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP):
+			mv.y -= 1.0
+		if Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN):
+			mv.y += 1.0
+		inp["melee"] = Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+		inp["cannon"] = Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
+		inp["dash"] = Input.is_physical_key_pressed(KEY_SPACE) or Input.is_physical_key_pressed(KEY_SHIFT)
+		inp["interact"] = Input.is_physical_key_pressed(KEY_E)
+		inp["kit"] = Input.is_physical_key_pressed(KEY_Q)
+		if mv != Vector2.ZERO or bool(inp["melee"]) or bool(inp["cannon"]):
+			using_pad = false
+		var mouse: Vector2 = get_viewport().get_mouse_position()
+		if _mouse_last.x >= 0.0 and mouse.distance_to(_mouse_last) > 1.5:
+			_use_mouse = true
+			using_pad = false
+		_mouse_last = mouse
+	if pad >= 0 and pad in Input.get_connected_joypads():
+		var stick: Vector2 = Vector2(Input.get_joy_axis(pad, JOY_AXIS_LEFT_X), Input.get_joy_axis(pad, JOY_AXIS_LEFT_Y))
+		if stick.length() > DEADZONE:
+			mv += stick
+			using_pad = true
+		var rs: Vector2 = Vector2(Input.get_joy_axis(pad, JOY_AXIS_RIGHT_X), Input.get_joy_axis(pad, JOY_AXIS_RIGHT_Y))
+		if rs.length() > 0.35:
+			inp["aim_screen"] = rs.normalized()
+			_use_mouse = false
+			using_pad = true
+		var b_melee: bool = Input.is_joy_button_pressed(pad, JOY_BUTTON_X) or Input.is_joy_button_pressed(pad, JOY_BUTTON_RIGHT_SHOULDER)
+		var b_cannon: bool = Input.is_joy_button_pressed(pad, JOY_BUTTON_B) or Input.get_joy_axis(pad, JOY_AXIS_TRIGGER_RIGHT) > 0.45
+		var b_dash: bool = Input.is_joy_button_pressed(pad, JOY_BUTTON_A)
+		var b_int: bool = Input.is_joy_button_pressed(pad, JOY_BUTTON_Y)
+		var b_kit: bool = Input.is_joy_button_pressed(pad, JOY_BUTTON_LEFT_SHOULDER)
+		if b_melee or b_cannon or b_dash or b_int or b_kit:
+			using_pad = true
+			_use_mouse = false
+		inp["melee"] = bool(inp["melee"]) or b_melee
+		inp["cannon"] = bool(inp["cannon"]) or b_cannon
+		inp["dash"] = bool(inp["dash"]) or b_dash
+		inp["interact"] = bool(inp["interact"]) or b_int
+		inp["kit"] = bool(inp["kit"]) or b_kit
+		inp["pause"] = Input.is_joy_button_pressed(pad, JOY_BUTTON_START)
+	if mv.length() > 1.0:
+		mv = mv.normalized()
+	inp["move"] = mv
+	return inp
+
+
+## Turns a screen-space direction (x right, y down) into a flat world direction.
+static func screen_to_world(v: Vector2) -> Vector3:
+	var yaw: float = deg_to_rad(Balance.CAMERA_YAW)
+	var right: Vector3 = Vector3(cos(yaw), 0.0, -sin(yaw))
+	var up: Vector3 = Vector3(-sin(yaw), 0.0, -cos(yaw))
+	return right * v.x - up * v.y
+
+
+func _mouse_aim() -> Vector3:
+	var cam: Camera3D = get_viewport().get_camera_3d()
+	if cam == null:
+		return aim
+	var mp: Vector2 = get_viewport().get_mouse_position()
+	var o: Vector3 = cam.project_ray_origin(mp)
+	var d: Vector3 = cam.project_ray_normal(mp)
+	if absf(d.y) < 0.001:
+		return aim
+	var t: float = (1.0 - o.y) / d.y
+	var hit: Vector3 = o + d * t
+	var v: Vector3 = hit - global_position
+	v.y = 0.0
+	return v.normalized() if v.length() > 0.2 else aim
+
+
+func _edge(inp: Dictionary, key: String) -> bool:
+	var now: bool = bool(inp.get(key, false))
+	var was: bool = bool(_prev.get(key, false))
+	_prev[key] = now
+	return now and not was
+
+
+# --- Update -----------------------------------------------------------------------------
+
+func _process(delta: float) -> void:
+	if level != null:
+		step(minf(delta, 0.05))
+
+
+func step(dt: float) -> void:
+	interact_pressed = false
+	pause_pressed = false
+	_tick_timers(dt)
+	if not alive:
+		_animate_down(dt)
+		return
+	var inp: Dictionary = _read_input() if input_enabled else {}
+	interact_pressed = _edge(inp, "interact")
+	pause_pressed = _edge(inp, "pause")
+	var mv: Vector2 = inp.get("move", Vector2.ZERO)
+	var move_dir: Vector3 = screen_to_world(mv)
+	# Aim: mouse, right stick, a scripted direction, or the way we're walking.
+	if inp.has("aim"):
+		var a: Vector3 = inp["aim"]
+		if a.length() > 0.01:
+			aim = Vector3(a.x, 0.0, a.z).normalized()
+	elif inp.has("aim_screen"):
+		aim = screen_to_world(inp["aim_screen"]).normalized()
+	elif kbm and _use_mouse and not scripted and input_enabled:
+		aim = _mouse_aim()
+	elif move_dir.length() > 0.3:
+		aim = move_dir.normalized()
+	# Movement and dash.
+	var speed: float = Balance.PLAYER_SPEED * Game.speed_mult()
+	if _edge(inp, "dash") and _dash_cd <= 0.0:
+		_dash_dir = move_dir.normalized() if move_dir.length() > 0.2 else aim
+		_dash_t = Balance.DASH_TIME
+		_dash_cd = Game.dash_cooldown()
+		Sfx.play("dash", -8.0)
+		Fx.afterimage(level.fx_root, global_position, color)
+	if _dash_t > 0.0:
+		velocity = _dash_dir * Balance.DASH_SPEED
+	else:
+		var slow: float = 0.55 if _slam_t > 0.0 else 1.0
+		velocity = velocity.move_toward(move_dir * speed * slow, Balance.PLAYER_ACCEL * dt)
+	_slide(velocity * dt)
+	# Attacks.
+	if bool(inp.get("melee", false)) and _melee_cd <= 0.0:
+		_melee()
+	if bool(inp.get("cannon", false)) and _cannon_cd <= 0.0:
+		_fire_cannon()
+	if _edge(inp, "kit"):
+		use_kit()
+	_animate(dt, move_dir.length() * speed if _dash_t <= 0.0 else Balance.DASH_SPEED)
+
+
+func _tick_timers(dt: float) -> void:
+	_dash_t = maxf(_dash_t - dt, 0.0)
+	_dash_cd = maxf(_dash_cd - dt, 0.0)
+	_melee_cd = maxf(_melee_cd - dt, 0.0)
+	_cannon_cd = maxf(_cannon_cd - dt, 0.0)
+	_iframes = maxf(_iframes - dt, 0.0)
+	_combo_t = maxf(_combo_t - dt, 0.0)
+	if _regen_delay > 0.0:
+		_regen_delay -= dt
+	elif alive:
+		energy = minf(energy + Game.energy_regen() * dt, energy_max)
+	if _flash_t > 0.0:
+		_flash_t -= dt
+		if _flash_t <= 0.0:
+			_restore_mats()
+
+
+func _slide(motion: Vector3) -> void:
+	motion.y = 0.0
+	for i: int in range(3):
+		if motion.length() < 0.0005:
+			break
+		var col: KinematicCollision3D = move_and_collide(motion)
+		if col == null:
+			break
+		var n: Vector3 = col.get_normal()
+		n.y = 0.0
+		if n.length() < 0.01:
+			break
+		n = n.normalized()
+		motion = col.get_remainder().slide(n)
+		velocity = velocity.slide(n)
+	position.y = 0.0
+
+
+# --- Actions ----------------------------------------------------------------------------
+
+func _melee() -> void:
+	_combo = _combo + 1 if _combo_t > 0.0 else 1
+	_combo_t = Balance.COMBO_WINDOW
+	_melee_cd = Balance.MELEE_COOLDOWN
+	var dmg: float = Balance.MELEE_DAMAGE * Game.melee_mult()
+	if _combo % Balance.COMBO_EVERY == 0:
+		var seismic: bool = Game.has_mod("seismic")
+		var r: float = Balance.SLAM_RADIUS * (Balance.SEISMIC_RADIUS if seismic else 1.0)
+		var center: Vector3 = global_position + aim * 1.1
+		var hits: int = level.hit_circle(center, r, dmg * Balance.SLAM_MULT, Balance.MELEE_KNOCKBACK * 1.4,
+			Balance.SEISMIC_STUN if seismic else 0.0)
+		_slam_t = 0.38
+		_melee_cd = Balance.MELEE_COOLDOWN * 1.6
+		Sfx.play("slam", -3.0)
+		Fx.shockwave(level.fx_root, center, Color(1.0, 0.8, 0.45), r)
+		level.shake(0.5 if hits > 0 else 0.3)
+	else:
+		_punch_side = 1 - _punch_side
+		_punch_t = 0.24
+		var hits2: int = level.hit_arc(global_position, aim, Balance.MELEE_RANGE, Balance.MELEE_ARC, dmg,
+			Balance.MELEE_KNOCKBACK)
+		Sfx.play("punch" if hits2 == 0 else "hit", -6.0)
+		if hits2 > 0:
+			level.shake(0.15)
+
+
+func _fire_cannon() -> void:
+	if energy < Balance.CANNON_ENERGY:
+		return
+	energy -= Balance.CANNON_ENERGY
+	_regen_delay = Balance.ENERGY_REGEN_DELAY
+	_cannon_cd = Balance.CANNON_COOLDOWN
+	_fire_t = 0.15
+	var from: Vector3 = global_position + aim * 0.75 + Vector3(0.0, 1.35, 0.0)
+	var dmg: float = Balance.CANNON_DAMAGE * Game.cannon_mult()
+	var arcs: bool = Game.has_mod("arc")
+	if Game.has_mod("splitter"):
+		for k: int in [-1, 0, 1]:
+			var d: Vector3 = aim.rotated(Vector3.UP, deg_to_rad(Balance.SPLITTER_SPREAD * float(k)))
+			level.spawn_bolt(from, d, Balance.CANNON_SPEED, dmg * Balance.SPLITTER_MULT, Balance.CANNON_RANGE, true, self, arcs)
+	else:
+		level.spawn_bolt(from, aim, Balance.CANNON_SPEED, dmg, Balance.CANNON_RANGE, true, self, arcs)
+	Sfx.play("zap", -9.0)
+
+
+func use_kit() -> bool:
+	if Game.kits <= 0 or hp >= max_hp or not alive:
+		if Game.kits <= 0:
+			Sfx.play("cant", -10.0)
+		return false
+	Game.kits -= 1
+	heal(Balance.KIT_HEAL)
+	Sfx.play("kit", -6.0)
+	return true
+
+
+func heal(amount: float) -> void:
+	hp = minf(hp + amount, max_hp)
+	Fx.sparks(level.fx_root, global_position + Vector3(0.0, 1.2, 0.0), Color(0.4, 1.0, 0.5), 10, 3.0)
+	Fx.number(level.fx_root, global_position + Vector3(0.0, 2.3, 0.0), "+%d" % int(amount), Color(0.5, 1.0, 0.5))
+
+
+## Returns true if the hit landed (not dodged by a dash or the post-hit grace period).
+func take_damage(amount: float, from: Vector3) -> bool:
+	if not alive or _dash_t > 0.0 or _iframes > 0.0:
+		return false
+	if shield > 0.0:
+		var absorbed: float = minf(shield, amount)
+		shield -= absorbed
+		amount -= absorbed
+	hp -= amount
+	_iframes = Balance.HIT_IFRAMES
+	_flash(Color(1.0, 0.35, 0.3))
+	Sfx.play("hurt", -6.0)
+	level.shake(0.25)
+	var push: Vector3 = global_position - from
+	push.y = 0.0
+	if push.length() > 0.01:
+		velocity += push.normalized() * 4.0
+	Fx.number(level.fx_root, global_position + Vector3(0.0, 2.3, 0.0), str(int(ceil(amount))), Color(1.0, 0.4, 0.35))
+	if hp <= 0.0:
+		_die()
+	return true
+
+
+func _die() -> void:
+	hp = 0.0
+	alive = false
+	_down_t = 0.0
+	Sfx.play("die", -4.0)
+	Fx.explosion(level.fx_root, global_position + Vector3(0.0, 1.0, 0.0), color, 1.6)
+	died.emit(self)
+
+
+func revive(at: Vector3, hp_share: float = 0.5) -> void:
+	alive = true
+	hp = max_hp * hp_share
+	energy = energy_max
+	_iframes = 1.5
+	global_position = at
+	velocity = Vector3.ZERO
+	_model.rotation.x = 0.0
+	_model.position.y = 0.0
+	Fx.shockwave(level.fx_root, at, Color(0.4, 0.9, 1.0), 1.5)
+	Sfx.play("warp", -10.0)
+
+
+func is_dashing() -> bool:
+	return _dash_t > 0.0
+
+
+func dash_ready() -> float:
+	return 1.0 - _dash_cd / maxf(Game.dash_cooldown(), 0.01)
+
+
+# --- Animation --------------------------------------------------------------------------
+
+func _animate(dt: float, speed: float) -> void:
+	var target_yaw: float = atan2(aim.x, aim.z)
+	_yaw = lerp_angle(_yaw, target_yaw, minf(dt * 18.0, 1.0))
+	_model.rotation.y = _yaw
+	var moving: float = clampf(speed / Balance.PLAYER_SPEED, 0.0, 1.4)
+	_walk += dt * (4.0 + 6.0 * moving)
+	var sw: float = sin(_walk) * 0.55 * moving
+	_leg_l.rotation.x = sw
+	_leg_r.rotation.x = -sw
+	_model.position.y = absf(cos(_walk)) * 0.06 * moving
+	var arm_l: float = -0.6 - sw * 0.8
+	var arm_r: float = -0.6 + sw * 0.8
+	_punch_t = maxf(_punch_t - dt, 0.0)
+	if _punch_t > 0.0:
+		# Fast jab out, slower pull back.
+		var k: float = 1.0 - _punch_t / 0.24
+		var ext: float = sin(minf(k * 2.2, 1.0) * PI * 0.5) * (1.0 - maxf(k - 0.45, 0.0) / 0.55)
+		if _punch_side == 0:
+			arm_l = lerpf(arm_l, -1.75, ext)
+		else:
+			arm_r = lerpf(arm_r, -1.75, ext)
+	_slam_t = maxf(_slam_t - dt, 0.0)
+	var torso_x: float = 0.38
+	if _slam_t > 0.0:
+		var k2: float = 1.0 - _slam_t / 0.38
+		var lift: float = sin(minf(k2 / 0.4, 1.0) * PI * 0.5) if k2 < 0.4 else 1.0 - (k2 - 0.4) / 0.6
+		arm_l = lerpf(-0.9, -3.0, lift)
+		arm_r = arm_l
+		torso_x = lerpf(0.55, 0.05, lift)
+	_arm_l.rotation.x = arm_l
+	_arm_r.rotation.x = arm_r
+	_torso.rotation.x = torso_x + absf(sw) * 0.05
+	_fire_t = maxf(_fire_t - dt, 0.0)
+	_head.rotation.x = -0.35 * (_fire_t / 0.15)
+	_mouth_mat.emission_energy_multiplier = 1.0 + 5.0 * (_fire_t / 0.15) + (energy / energy_max) * 0.6
+	_mouth.scale = Vector3(1.0, 1.0 + 1.5 * (_fire_t / 0.15), 1.0)
+	# Blink while invulnerable after a hit.
+	_model.visible = _iframes <= 0.0 or fmod(_iframes, 0.12) > 0.05 or _dash_t > 0.0
+
+
+func _animate_down(dt: float) -> void:
+	_down_t += dt
+	_model.rotation.x = lerpf(_model.rotation.x, -1.35, minf(dt * 8.0, 1.0))
+	_model.position.y = lerpf(_model.position.y, 0.35, minf(dt * 8.0, 1.0))
+	_model.visible = true
+
+
+func _flash(c: Color) -> void:
+	_flash_t = 0.09
+	var m: StandardMaterial3D = Art.mat(c, 1.2)
+	for part: MeshInstance3D in _body_parts:
+		part.material_override = m
+
+
+func _restore_mats() -> void:
+	for i: int in range(_body_parts.size()):
+		_body_parts[i].material_override = _body_mats[i]

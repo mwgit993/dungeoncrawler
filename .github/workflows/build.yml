@@ -1,0 +1,97 @@
+name: Smoke Test, Build & Publish Dungeon Crawler (.exe)
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: dungeoncrawler-release-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Smoke Test & Package DungeonCrawler.exe
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref }}
+          fetch-depth: 0
+
+      - name: Merge latest main when validating a Pull Request
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        run: |
+          git config user.name "Dungeon Crawler CI"
+          git config user.email "ci@dungeoncrawler.local"
+          git fetch origin main
+          git merge origin/main --no-edit
+
+      - name: Download Godot 4.7.2 (Windows x64)
+        shell: pwsh
+        run: |
+          $url = "https://github.com/godotengine/godot-builds/releases/download/4.7.2-stable/Godot_v4.7.2-stable_win64.exe.zip"
+          Invoke-WebRequest -Uri $url -OutFile "godot.zip"
+          Expand-Archive -Path "godot.zip" -DestinationPath "godot_bin" -Force
+
+      - name: Import project & run automated headless smoke test
+        shell: pwsh
+        run: |
+          $godotConsole = "$PWD\godot_bin\Godot_v4.7.2-stable_win64_console.exe"
+          & $godotConsole --headless --path . --import
+          $out = & $godotConsole --headless --path . --quit-after 30 -- --smoke-test 2>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch "DUNGEON_SMOKE_TEST_PASSED") {
+            Write-Error "Smoke test did not pass!"
+            exit 1
+          }
+
+      - name: Package standalone DungeonCrawler-Windows.zip
+        shell: pwsh
+        run: |
+          $godotGui     = "$PWD\godot_bin\Godot_v4.7.2-stable_win64.exe"
+          $godotConsole = "$PWD\godot_bin\Godot_v4.7.2-stable_win64_console.exe"
+          New-Item -ItemType Directory -Force -Path "builds\windows" | Out-Null
+          & $godotConsole --headless --path . --export-pack "Windows" "builds/windows/DungeonCrawler.pck"
+          if (-not (Test-Path "builds\windows\DungeonCrawler.pck")) {
+            Write-Error "Failed to export DungeonCrawler.pck!"
+            exit 1
+          }
+          Copy-Item -Force $godotGui "builds\windows\DungeonCrawler.exe"
+          Compress-Archive -Path "builds\windows\*" -DestinationPath "DungeonCrawler-Windows.zip" -Force
+          Get-Item "DungeonCrawler-Windows.zip" | Select-Object Name, Length
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DungeonCrawler-Windows
+          path: DungeonCrawler-Windows.zip
+
+      # Pull requests only get the smoke test and the build artifact above; nothing is merged
+      # automatically. Once a change is on main, it's published as the 'latest' release.
+      - name: Publish DungeonCrawler-Windows.zip Release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $repo = "${{ github.repository }}"
+          $mainInfo = gh api "repos/$repo/commits/main" | ConvertFrom-Json
+          $shortSha = $mainInfo.sha.Substring(0, 7)
+          $changeDesc = ($mainInfo.commit.message -split "`n")[0]
+          $stamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'")
+          $notes = "**Latest Change:** $changeDesc`n**Commit:** ``$shortSha`` ($stamp)`n`n### How to Play`n1. Download **DungeonCrawler-Windows.zip** below.`n2. Extract the folder anywhere (keep ``DungeonCrawler.exe`` and ``DungeonCrawler.pck`` together in the same folder!).`n3. Double-click **DungeonCrawler.exe**!"
+
+          # Delete & recreate the 'latest' Release + Git tag so its timestamp and Source code zip update too.
+          gh release delete latest -R $repo --cleanup-tag --yes 2>$null
+          gh release create latest "DungeonCrawler-Windows.zip" -R $repo --target $mainInfo.sha --title "Dungeon Crawler — Latest Playable Build ($shortSha)" --notes $notes
