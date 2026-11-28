@@ -1,13 +1,14 @@
 class_name GorillaBot
 extends CharacterBody3D
 
-## The player: a gorilla robot that smashes with its arms and fires a plasma cannon from its mouth.
+## The player: a gorilla robot that slashes with energy blades that slide out of its forearms and
+## fires a plasma cannon from its mouth.
 ## Player 1 listens to keyboard + mouse and the first controller; co-op players each own a
-## controller. The model is built from boxes and animated in code (knuckle-walk, punches, slam).
+## controller. The model is built from boxes and animated in code (knuckle-walk, blade slashes, slam).
 ##
-## Keyboard/mouse: WASD move, mouse aims, left click smash, right click mouth cannon, Space dash,
+## Keyboard/mouse: WASD move, mouse aims, left click blades, right click mouth cannon, Space dash,
 ## Q repair kit, E interact.
-## Controller: left stick move, right stick aim, X / RB smash, B / RT cannon, A dash, LB repair
+## Controller: left stick move, right stick aim, X / RB blades, B / RT cannon, A dash, LB repair
 ## kit, Y interact.
 
 signal died(bot: GorillaBot)
@@ -71,7 +72,7 @@ var _use_mouse: bool = true
 var rig: GorillaRig
 var _down_t: float = 0.0
 var _slam_t: float = 0.0
-var _punch_side: int = 0
+var _slash_side: int = 0
 
 
 func setup(lvl: LevelMap, player_slot: int, uses_kbm: bool, pad_id: int) -> void:
@@ -329,7 +330,7 @@ func _melee() -> void:
 	if _combo % Balance.COMBO_EVERY == 0:
 		var seismic: bool = Game.has_mod("seismic")
 		var r: float = Balance.SLAM_RADIUS * (Balance.SEISMIC_RADIUS if seismic else 1.0)
-		var center: Vector3 = global_position + aim * 1.1
+		var center: Vector3 = global_position + aim * 1.4
 		var hits: int = level.hit_circle(center, r, dmg * Balance.SLAM_MULT, Balance.MELEE_KNOCKBACK * 1.4,
 			Balance.SEISMIC_STUN if seismic else 0.0)
 		_slam_t = 0.38
@@ -339,12 +340,16 @@ func _melee() -> void:
 		Fx.shockwave(level.fx_root, center, Color(1.0, 0.8, 0.45), r)
 		level.shake(0.5 if hits > 0 else 0.3)
 	else:
-		_punch_side = 1 - _punch_side
-		_rig("punch", [_punch_side])
+		_slash_side = 1 - _slash_side
+		_rig("slash", [_slash_side])
 		var hits2: int = level.hit_arc(global_position, aim, Balance.MELEE_RANGE, Balance.MELEE_ARC, dmg,
 			Balance.MELEE_KNOCKBACK)
-		Sfx.play("punch" if hits2 == 0 else "hit", -6.0)
+		# The blade's sweep: arm 0 swings from its side (-x, the bot's right) across to the left.
+		Fx.slash(level.fx_root, global_position, aim, Balance.MELEE_RANGE, Balance.MELEE_ARC,
+			color.lerp(Color.WHITE, 0.35), 1.0 if _slash_side == 0 else -1.0)
+		Sfx.play("slash", -7.0)
 		if hits2 > 0:
+			Sfx.play("hit", -6.0)
 			level.shake(0.15)
 
 

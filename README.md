@@ -1,7 +1,7 @@
 # Dungeon Crawler
 
-An isometric dungeon crawler (working title) in Godot 4.7. You play a gorilla robot that smashes
-with its arms and fires a plasma cannon from its mouth, fighting robot enemies across future
+An isometric dungeon crawler (working title) in Godot 4.7. You play a gorilla robot that slashes
+with energy blades that slide out of its arms and fires a plasma cannon from its mouth, fighting robot enemies across future
 worlds. It has Brood War style maps and a 16-bit look: the 3D world renders at 640x360 and is
 scaled up with crisp pixels. Everything is generated in code, including tiles, models, effects
 and sounds. The characters are smooth sculpted 3D models shaded like HD-2D pixel sprites, with
@@ -18,14 +18,14 @@ build is published under Releases as `DungeonCrawler-Windows.zip`.
 | --- | --- | --- |
 | Move | WASD / arrows | Left stick |
 | Aim | Mouse | Right stick (or the way you walk) |
-| Arm smash | Left click | X or RB |
+| Arm blades | Left click | X or RB |
 | Mouth cannon | Right click | B or RT |
 | Dash (dodges hits) | Space / Shift | A |
 | Repair kit | Q | LB |
 | Talk / use | E | Y |
 | Pause | Esc | Start |
 
-Every 3rd smash in a row is a two-fisted ground slam that hits all around you. The cannon uses
+The blades slide out of the gorilla's forearms when you attack and sweep a wide arc in front of you. Every 3rd slash in a row is a two-bladed ground slam that hits all around you. The cannon uses
 energy, which recharges when you stop firing. F11 toggles fullscreen.
 
 **Co-op:** player 1 uses the keyboard/mouse or the first controller. Players 2-4 press START on

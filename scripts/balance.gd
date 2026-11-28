@@ -25,14 +25,15 @@ const DASH_TIME: float = 0.17
 const DASH_COOLDOWN: float = 0.9
 const HIT_IFRAMES: float = 0.45       # invulnerable this long after taking a hit
 
+# Melee is the arm blades: energy blades that slide out of the forearms and slash in a wide arc.
 const MELEE_DAMAGE: float = 24.0
-const MELEE_RANGE: float = 2.5
-const MELEE_ARC: float = 120.0        # degrees, centred on the aim direction
+const MELEE_RANGE: float = 3.4        # the blades reach this far from the bot's centre
+const MELEE_ARC: float = 150.0        # degrees, centred on the aim direction
 const MELEE_COOLDOWN: float = 0.36
 const MELEE_KNOCKBACK: float = 7.0
-const COMBO_EVERY: int = 3            # every 3rd punch in a row is a two-fisted ground slam
-const COMBO_WINDOW: float = 1.1       # punches further apart than this restart the count
-const SLAM_RADIUS: float = 3.4
+const COMBO_EVERY: int = 3            # every 3rd slash in a row is a two-bladed ground slam
+const COMBO_WINDOW: float = 1.1       # slashes further apart than this restart the count
+const SLAM_RADIUS: float = 3.8
 const SLAM_MULT: float = 1.6          # slam damage = MELEE_DAMAGE * this
 
 const CANNON_DAMAGE: float = 15.0
@@ -109,7 +110,7 @@ const SHOP: Array[Dictionary] = [
 ]
 # Augment Bay: permanent upgrades. "per" is the bonus per level, shown in the description.
 const AUGMENTS: Array[Dictionary] = [
-	{"id": "arms", "name": "HYDRAULIC ARMS", "desc": "+%d%% smash damage per level.", "per": 15,
+	{"id": "arms", "name": "HYDRAULIC ARMS", "desc": "+%d%% blade damage per level.", "per": 15,
 		"cost": 80, "step": 70, "max": 5},
 	{"id": "throat", "name": "PLASMA THROAT", "desc": "+%d%% cannon damage per level.", "per": 15,
 		"cost": 80, "step": 70, "max": 5},
@@ -126,7 +127,7 @@ const CAPACITOR_REGEN: float = 0.12   # energy regen +12% per Capacitor level
 const LAB: Array[Dictionary] = [
 	{"id": "splitter", "name": "SPLITTER JAW", "desc": "Cannon fires a fan of 3 bolts (70% each).",
 		"cost": 400},
-	{"id": "seismic", "name": "SEISMIC FISTS", "desc": "Combo slams are 50% wider and stun.",
+	{"id": "seismic", "name": "SEISMIC SLAM", "desc": "Combo slams are 50% wider and stun.",
 		"cost": 350},
 	{"id": "arc", "name": "ARC TEETH", "desc": "Bolts arc to a second robot for 50% damage.",
 		"cost": 450},

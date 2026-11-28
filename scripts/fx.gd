@@ -1,7 +1,8 @@
 class_name Fx
 extends Node3D
 
-## Short-lived effects: sparks, debris, explosions, shockwave rings, floating damage numbers.
+## Short-lived effects: sparks, debris, explosions, shockwave rings, blade slash trails, floating
+## damage numbers.
 ## Each call makes one Fx node that animates its own little particles and frees itself.
 
 const MAX_LIFE: float = 1.2
@@ -14,6 +15,8 @@ var _grav: float = 0.0
 var _ring: MeshInstance3D = null
 var _ring_mat: StandardMaterial3D = null
 var _ring_r: float = 1.0
+var _spin: float = 0.0        # the ring turns this fast (radians a second), for slash trails
+var _delay: float = 0.0       # the ring shows up this long after the effect starts
 var _label: Label3D = null
 var _light: OmniLight3D = null
 var _t: float = 0.0
@@ -37,6 +40,8 @@ static func replay(parent: Node3D, kind: String, a: Array) -> void:
 			afterimage(parent, a[0], a[1])
 		"zap":
 			zap(parent, a[0], a[1])
+		"slash":
+			slash(parent, a[0], a[1], float(a[2]), float(a[3]), a[4], float(a[5]))
 
 
 static func _make(parent: Node3D, pos: Vector3, ttl: float) -> Fx:
@@ -150,6 +155,55 @@ static func zap(parent: Node3D, a: Vector3, b: Vector3) -> void:
 		fx._add(Art.box(Vector3(0.1, 0.1, 0.1)), m, Vector3.ZERO, 0.18, p)
 
 
+## A blade's swoosh: a glowing flat arc at arm height around pos, centred on dir, from the bot out
+## to the blade's reach. sweep 1 swings from the -x side of dir to the +x side, -1 the other way;
+## the trail is brightest where the blade ended up and fades back along the swing.
+static func slash(parent: Node3D, pos: Vector3, dir: Vector3, radius: float, arc_deg: float, color: Color,
+		sweep: float) -> void:
+	Net.ev("fx", ["slash", [pos, dir, radius, arc_deg, color, sweep]])
+	var fx: Fx = _make(parent, pos, 0.3)
+	fx._delay = 0.05  # appears as the arm sweeps through (GorillaRig.slash)
+	var half: float = deg_to_rad(arc_deg) * 0.5
+	var segs: int = 18
+	var verts: PackedVector3Array = PackedVector3Array()
+	var cols: PackedColorArray = PackedColorArray()
+	var flat: Vector3 = Vector3(dir.x, 0.0, dir.z).normalized()
+	if flat == Vector3.ZERO:
+		flat = Vector3.FORWARD
+	# A crescent: clear on the inside, brightest just inside the blade's reach.
+	var bands: Array[Vector2] = [Vector2(0.45, 0.0), Vector2(0.88, 0.55), Vector2(1.0, 1.0)]
+	for i: int in range(segs + 1):
+		var k: float = float(i) / float(segs)
+		var d: Vector3 = flat.rotated(Vector3.UP, lerpf(-half, half, k) * sweep)
+		var lead: float = lerpf(0.3, 1.0, k)
+		for b: Vector2 in bands:
+			verts.append(d * radius * b.x + Vector3(0.0, 1.05, 0.0))
+			cols.append(Color(lead * b.y, lead * b.y, lead * b.y, 1.0))
+	var idx: PackedInt32Array = PackedInt32Array()
+	for q: int in range(segs):
+		for band: int in range(2):
+			var a0: int = q * 3 + band
+			var a1: int = a0 + 3
+			idx.append_array([a0, a0 + 1, a1, a0 + 1, a1 + 1, a1])
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = verts
+	arrays[Mesh.ARRAY_COLOR] = cols
+	arrays[Mesh.ARRAY_INDEX] = idx
+	var mesh: ArrayMesh = ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	# Added on top of the floor (so it glows and never darkens it); the vertex colours fade it out
+	# toward the inside and the trailing end.
+	var c: Color = color.lerp(Color.WHITE, 0.4)
+	fx._ring_mat = Art.alpha_mat(Color(c.r, c.g, c.b, 0.85), true)
+	fx._ring_mat.vertex_color_use_as_albedo = true
+	fx._ring_mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	fx._ring = Art.part(fx, mesh, fx._ring_mat, Vector3.ZERO)
+	fx._ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	fx._ring_r = -1.0
+	fx._spin = 2.2 * sweep
+
+
 func _process(delta: float) -> void:
 	_t += delta
 	for i: int in range(_parts.size()):
@@ -169,10 +223,13 @@ func _process(delta: float) -> void:
 		mi.scale = Vector3.ONE * clampf(k * 1.5, 0.0, 1.0)
 	var f: float = clampf(_t / _ttl, 0.0, 1.0)
 	if _ring != null:
+		var rf: float = clampf((_t - _delay) / maxf(_ttl - _delay, 0.001), 0.0, 1.0)
+		_ring.visible = _t >= _delay
+		_ring.rotation.y += _spin * delta
 		if _ring_r > 0.0:
-			var s: float = lerpf(0.2, _ring_r, 1.0 - pow(1.0 - f, 3.0))
+			var s: float = lerpf(0.2, _ring_r, 1.0 - pow(1.0 - rf, 3.0))
 			_ring.scale = Vector3(s, 1.0 if _ring.mesh is TorusMesh else s, s)
-		_ring_mat.albedo_color.a = (1.0 - f) * 0.85
+		_ring_mat.albedo_color.a = (1.0 - rf) * 0.85
 	if _label != null:
 		_label.position.y = f * 0.9
 		_label.modulate.a = 1.0 - maxf(f - 0.5, 0.0) * 2.0

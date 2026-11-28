@@ -17,7 +17,7 @@ func _ready() -> void:
 		var p: AudioStreamPlayer = AudioStreamPlayer.new()
 		add_child(p)
 		_players.append(p)
-	_streams["punch"] = _fx(0.14, 150.0, 55.0, 0, 0.9, 0.6, 420.0, 26.0, 3)
+	_streams["slash"] = _blade(0.2, 25)
 	_streams["slam"] = _fx(0.45, 95.0, 30.0, 0, 1.0, 0.8, 260.0, 7.0, 5)
 	_streams["zap"] = _fx(0.16, 1500.0, 260.0, 1, 0.5, 0.25, 3200.0, 14.0, 7)
 	_streams["eshot"] = _fx(0.12, 760.0, 420.0, 1, 0.45, 0.1, 2000.0, 16.0, 9)
@@ -111,6 +111,27 @@ func _metal(length: float, partials: Array[float], seed: int) -> AudioStreamWAV:
 			v += sin(TAU * partials[p] * t) * exp(-t * (14.0 + 9.0 * float(p))) / float(p + 1)
 		out[i] = v * (1.0 - float(i) / float(n))
 	return _to_stream(_normalize(out, 0.7))
+
+
+## An energy blade swing: a rushing whoosh with a buzzing hum that bends up through the swing.
+func _blade(length: float, seed: int) -> AudioStreamWAV:
+	var rate: float = float(MIX_RATE)
+	var n: int = int(length * rate)
+	var out: PackedFloat32Array = PackedFloat32Array()
+	out.resize(n)
+	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
+	rng.seed = seed
+	var bp: BandPass = BandPass.new()
+	var phase: float = 0.0
+	for i: int in range(n):
+		var k: float = float(i) / float(n)
+		if i % 16 == 0:
+			bp.tune(lerpf(900.0, 3400.0, k), 2.5, rate)
+		phase = fmod(phase + lerpf(180.0, 330.0, k) / rate, 1.0)
+		var hum: float = (phase * 2.0 - 1.0) * 0.35 + sin(phase * TAU * 2.0) * 0.25
+		var env: float = sin(minf(k * 1.4, 1.0) * PI * 0.5) * (1.0 - k) * (1.0 - k) * 1.6
+		out[i] = (bp.process(rng.randf_range(-1.0, 1.0)) + hum) * env
+	return _to_stream(_normalize(out, 0.6))
 
 
 func _whoosh(length: float, f0: float, f1: float, seed: int) -> AudioStreamWAV:
