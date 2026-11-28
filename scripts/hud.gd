@@ -299,6 +299,25 @@ func press(id: String) -> void:
 	_on_pick(id)
 
 
+func menu_button(i: int) -> Button:
+	return _menu_list.get_child(i) as Button if i >= 0 and i < _menu_list.get_child_count() else null
+
+
+## A on a controller: presses the selected row. Godot's ui_accept only has Enter and Space, so
+## the d-pad and stick move the selection (ui_up / ui_down include them) but a pad's A did nothing.
+func press_focused() -> void:
+	var b: Button = get_viewport().gui_get_focus_owner() as Button
+	if b == null or not _menu_list.is_ancestor_of(b):
+		b = menu_button(0)
+		if b != null:
+			b.grab_focus()
+		return
+	if b.disabled:
+		Sfx.play("cant", -8.0)
+		return
+	b.pressed.emit()
+
+
 ## A one-line text box in the menu panel (the host's address for JOIN ONLINE GAME).
 ## on_submit(text) runs on Enter or OK; BACK and Esc close it like any menu.
 func open_input(kind: String, title: String, text: String, desc: String, on_submit: Callable, on_back: Callable) -> void:
