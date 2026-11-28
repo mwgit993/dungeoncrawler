@@ -970,16 +970,24 @@ func _smoke_rigs(p1: GorillaBot) -> void:
 		g.animate(dt, Vector3.ZERO, Vector3.FORWARD, 1.0)
 		squashed = squashed or g.root.scale.y < 0.97
 	_check(squashed and not g.flashing(), "gorilla slam squashes the body and the flash fades")
-	g.punch(0)
+	g.slash(0)
 	g.fire()
 	g.dash()
 	for i2: int in range(30):
 		g.animate(dt, Vector3(4.0, 0.0, 2.0), Vector3.RIGHT, 0.5)
+	_check(g.blades_out() > 0.95 and g._blades[0].visible and g._blades[1].visible, "the arm blades slide out on a slash")
 	g.knock_down()
 	for i3: int in range(30):
 		g.animate_down(dt)
+	_check(g.blades_out() == 0.0 and not g._blades[0].visible, "a downed gorilla's blades go back in")
 	g.revive()
 	g.animate(dt, Vector3.ZERO, Vector3.FORWARD, 1.0)
+	g.slash(1)
+	var swung: bool = false
+	for i4: int in range(90):
+		g.animate(dt, Vector3.ZERO, Vector3.FORWARD, 1.0)
+		swung = swung or absf(g._arms[1].rotation.y) > 0.6
+	_check(swung and g.blades_out() < 0.01 and not g._blades[1].visible, "a slash sweeps the arm across, and the blades retract after a pause")
 	var heights: Dictionary = {"scuttler": [0.4, 1.0], "gunner": [1.2, 2.0], "bruiser": [1.7, 2.6],
 		"foreman": [2.4, 3.6], "warden": [2.6, 3.8]}
 	var strikes: Dictionary = {"scuttler": "bite", "gunner": "burst", "bruiser": "slam", "foreman": "slam", "warden": "nova"}
@@ -1067,16 +1075,30 @@ func _smoke_foundry(p1: GorillaBot) -> void:
 	_check(level.find_path(level.start_pos, level.boss.global_position).size() > 0, "boss is reachable from the start")
 	var east: Vector3 = Vector3(1.0, 0.0, 0.0)
 	var base: Vector3 = level.start_pos
-	# Smash a scuttler to death and collect its scrap.
+	# Slash a scuttler to death and collect its scrap.
 	p1.global_position = base
 	var s: RobotEnemy = level.spawn_enemy("scuttler", base + east * 1.4, true)
 	p1.sim = {"aim": east, "melee": true}
 	level.simulate(2.5)
-	_check(not s.alive, "smashing kills a scuttler")
+	_check(not s.alive, "the blades kill a scuttler")
 	p1.sim = {}
 	var before: int = mission_scrap
 	level.simulate(2.0)
 	_check(mission_scrap > before or level.pickups.get_child_count() > 0, "scrap drops")
+	# The arm blades reach well past where a punch did.
+	level.simulate(1.0)
+	p1.global_position = base
+	var far: RobotEnemy = level.spawn_enemy("gunner", base + east * 3.6, false)
+	far.max_hp = 99999.0
+	far.hp = 99999.0
+	p1.sim = {"aim": east, "melee": true}
+	level.simulate(0.1)
+	p1.sim = {}
+	_check(far.hp < far.max_hp, "the arm blades cut a robot 3.6 m away (the old punch reached 2.5)")
+	_check(p1.rig.blades_out() > 0.5, "the blades are out while fighting")
+	far.take_damage(9999999.0, east, 0.0)
+	level.simulate(1.5)
+	_check(p1.rig.blades_out() < 0.01, "the blades slide back in after the fight")
 	# Mouth cannon hits at range.
 	p1.global_position = base
 	var g: RobotEnemy = level.spawn_enemy("gunner", base + east * 7.0, false)
@@ -1153,7 +1175,7 @@ func _smoke_upgrades(p1: GorillaBot) -> void:
 	_check(hud.menu_kind == "augments", "augment bay opens once unlocked")
 	var arms0: float = Game.melee_mult()
 	hud.press("arms")
-	_check(Game.aug("arms") == 1 and Game.melee_mult() > arms0, "hydraulic arms raise smash damage")
+	_check(Game.aug("arms") == 1 and Game.melee_mult() > arms0, "hydraulic arms raise blade damage")
 	hud.press("plating")
 	_check(is_equal_approx(p1.max_hp, Balance.PLAYER_HP + 20.0), "titan plating raises max HP")
 	var spent: int = Game.scrap
@@ -1225,7 +1247,7 @@ func _smoke_mods(p1: GorillaBot) -> void:
 	_check(b.hp < b.max_hp, "arc teeth chain to a nearby robot")
 	a.take_damage(999999.0, east, 0.0)
 	b.take_damage(999999.0, east, 0.0)
-	# Seismic fists: the combo slam stuns.
+	# Seismic slam: the combo slam stuns.
 	p1.reset_stats()
 	p1.global_position = base
 	var s: RobotEnemy = level.spawn_enemy("bruiser", base + east * 1.8, false)
@@ -1311,7 +1333,7 @@ func _smoke_net(p1: GorillaBot) -> void:
 	var fhp: float = foe.hp
 	level.simulate(0.4)
 	_check(rb.global_position.distance_to(spot) < 0.05, "net: a client's bot stands where the client says")
-	_check(foe.hp < fhp, "net: a client's smash button hits robots on the host")
+	_check(foe.hp < fhp, "net: a client's blade button hits robots on the host")
 	Game.kits = 2
 	rb.hp = rb.max_hp * 0.5
 	net_remote_input(slot, [spot, Vector3.ZERO, to.normalized(), false, false, true, 1, 0])
