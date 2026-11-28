@@ -4,7 +4,8 @@ An isometric dungeon crawler (working title) in Godot 4.7. You play a gorilla ro
 with its arms and fires a plasma cannon from its mouth, fighting robot enemies across future
 worlds. It has Brood War style maps and a 16-bit look: the 3D world renders at 640x360 and is
 scaled up with crisp pixels. Everything is generated in code, including tiles, models, effects
-and sounds. The only file assets are the Press Start 2P font (SIL Open Font License) and the icon.
+and sounds. The characters are smooth sculpted 3D models shaded like HD-2D pixel sprites, with
+toon light bands and 1-pixel outlines, so they can turn in any direction. The only file assets are the Press Start 2P font (SIL Open Font License) and the icon.
 
 This first build is a test bed for the gameplay loop: a hub ship and two maps.
 

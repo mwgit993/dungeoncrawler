@@ -50,25 +50,10 @@ var _mouse_last: Vector2 = Vector2(-1.0, -1.0)
 var _use_mouse: bool = true
 
 # Model and animation state.
-var _model: Node3D
-var _torso: Node3D
-var _head: Node3D
-var _arm_l: Node3D
-var _arm_r: Node3D
-var _leg_l: Node3D
-var _leg_r: Node3D
-var _mouth: MeshInstance3D
-var _mouth_mat: StandardMaterial3D
-var _body_parts: Array[MeshInstance3D] = []
-var _body_mats: Array[Material] = []
-var _walk: float = 0.0
-var _punch_t: float = 0.0
-var _punch_side: int = 0
-var _slam_t: float = 0.0
-var _fire_t: float = 0.0
-var _flash_t: float = 0.0
-var _yaw: float = 0.0
+var rig: GorillaRig
 var _down_t: float = 0.0
+var _slam_t: float = 0.0
+var _punch_side: int = 0
 
 
 func setup(lvl: LevelMap, player_slot: int, uses_kbm: bool, pad_id: int) -> void:
@@ -88,7 +73,11 @@ func setup(lvl: LevelMap, player_slot: int, uses_kbm: bool, pad_id: int) -> void
 	cs.shape = cap
 	cs.position = Vector3(0.0, 0.95, 0.0)
 	add_child(cs)
-	_build_model()
+	rig = GorillaRig.new()
+	rig.name = "Rig"
+	add_child(rig)
+	rig.setup(color)
+	Art.blob_shadow(self, 0.95)
 	reset_stats()
 
 
@@ -103,78 +92,14 @@ func reset_stats() -> void:
 	_iframes = 0.0
 	_dash_t = 0.0
 	_down_t = 0.0
-	if _model != null:
-		_model.rotation.x = 0.0
-		_model.position.y = 0.0
+	if rig != null:
+		rig.revive()
 
 
 func move_level(lvl: LevelMap, pos: Vector3) -> void:
 	level = lvl
 	global_position = pos
 	velocity = Vector3.ZERO
-
-
-# --- Model ------------------------------------------------------------------------------
-
-func _build_model() -> void:
-	var metal: StandardMaterial3D = Art.mat(Color(0.46, 0.49, 0.56))
-	var dark: StandardMaterial3D = Art.mat(Color(0.2, 0.22, 0.27))
-	var silver: StandardMaterial3D = Art.mat(Color(0.78, 0.8, 0.84))
-	var team: StandardMaterial3D = Art.mat(color)
-	var eye: StandardMaterial3D = Art.mat(Color(0.4, 0.95, 1.0), 2.4)
-	_mouth_mat = StandardMaterial3D.new()
-	_mouth_mat.albedo_color = Color(1.0, 0.55, 0.15)
-	_mouth_mat.emission_enabled = true
-	_mouth_mat.emission = Color(1.0, 0.55, 0.15)
-	_mouth_mat.emission_energy_multiplier = 1.0
-	_mouth_mat.diffuse_mode = BaseMaterial3D.DIFFUSE_TOON
-	_model = Node3D.new()
-	add_child(_model)
-	Art.blob_shadow(self, 0.95)
-	# Hips and legs.
-	_body(Art.part(_model, Art.box(Vector3(0.7, 0.3, 0.45)), dark, Vector3(0.0, 0.78, -0.12)))
-	_leg_l = _pivot(_model, Vector3(-0.27, 0.78, -0.12))
-	_leg_r = _pivot(_model, Vector3(0.27, 0.78, -0.12))
-	for leg: Node3D in [_leg_l, _leg_r]:
-		_body(Art.part(leg, Art.box(Vector3(0.3, 0.7, 0.32)), metal, Vector3(0.0, -0.35, 0.0)))
-		_body(Art.part(leg, Art.box(Vector3(0.36, 0.14, 0.48)), dark, Vector3(0.0, -0.71, 0.07)))
-	# Hunched torso.
-	_torso = _pivot(_model, Vector3(0.0, 0.88, -0.05))
-	_torso.rotation.x = 0.38
-	_body(Art.part(_torso, Art.box(Vector3(1.15, 0.85, 0.78)), metal, Vector3(0.0, 0.45, 0.0)))
-	_body(Art.part(_torso, Art.box(Vector3(1.0, 0.55, 0.12)), silver, Vector3(0.0, 0.55, -0.42)))
-	_body(Art.part(_torso, Art.box(Vector3(0.68, 0.42, 0.08)), team, Vector3(0.0, 0.42, 0.41)))
-	for s: float in [-1.0, 1.0]:
-		_body(Art.part(_torso, Art.box(Vector3(0.48, 0.42, 0.55)), metal, Vector3(0.74 * s, 0.72, 0.0)))
-		_body(Art.part(_torso, Art.box(Vector3(0.5, 0.1, 0.57)), team, Vector3(0.74 * s, 0.95, 0.0)))
-		Art.part(_torso, Art.box(Vector3(0.14, 0.14, 0.06)), Art.mat(color, 1.6), Vector3(0.3 * s, 0.72, -0.47))
-	# Head sits low and forward, gorilla style.
-	_head = _pivot(_torso, Vector3(0.0, 0.82, 0.36))
-	_body(Art.part(_head, Art.box(Vector3(0.56, 0.44, 0.5)), metal, Vector3.ZERO))
-	_body(Art.part(_head, Art.box(Vector3(0.62, 0.13, 0.12)), dark, Vector3(0.0, 0.16, 0.26)))
-	Art.part(_head, Art.box(Vector3(0.44, 0.07, 0.04)), eye, Vector3(0.0, 0.06, 0.27))
-	_body(Art.part(_head, Art.box(Vector3(0.46, 0.17, 0.14)), dark, Vector3(0.0, -0.14, 0.24)))
-	_mouth = Art.part(_head, Art.box(Vector3(0.28, 0.08, 0.04)), _mouth_mat, Vector3(0.0, -0.14, 0.32))
-	# Long arms that reach the ground.
-	_arm_l = _pivot(_torso, Vector3(-0.78, 0.66, 0.02))
-	_arm_r = _pivot(_torso, Vector3(0.78, 0.66, 0.02))
-	for arm: Node3D in [_arm_l, _arm_r]:
-		_body(Art.part(arm, Art.box(Vector3(0.32, 0.66, 0.34)), metal, Vector3(0.0, -0.33, 0.0)))
-		_body(Art.part(arm, Art.box(Vector3(0.42, 0.62, 0.44)), dark, Vector3(0.0, -0.92, 0.04)))
-		_body(Art.part(arm, Art.box(Vector3(0.52, 0.42, 0.52)), metal, Vector3(0.0, -1.38, 0.08)))
-		_body(Art.part(arm, Art.box(Vector3(0.54, 0.1, 0.54)), team, Vector3(0.0, -1.16, 0.08)))
-
-
-func _pivot(parent: Node3D, pos: Vector3) -> Node3D:
-	var n: Node3D = Node3D.new()
-	n.position = pos
-	parent.add_child(n)
-	return n
-
-
-func _body(mi: MeshInstance3D) -> void:
-	_body_parts.append(mi)
-	_body_mats.append(mi.material_override)
 
 
 # --- Input ------------------------------------------------------------------------------
@@ -279,7 +204,8 @@ func step(dt: float) -> void:
 	pause_pressed = false
 	_tick_timers(dt)
 	if not alive:
-		_animate_down(dt)
+		_down_t += dt
+		rig.animate_down(dt)
 		return
 	var inp: Dictionary = _read_input() if input_enabled else {}
 	interact_pressed = _edge(inp, "interact")
@@ -305,6 +231,7 @@ func step(dt: float) -> void:
 		_dash_cd = Game.dash_cooldown()
 		Sfx.play("dash", -8.0)
 		Fx.afterimage(level.fx_root, global_position, color)
+		rig.dash()
 	if _dash_t > 0.0:
 		velocity = _dash_dir * Balance.DASH_SPEED
 	else:
@@ -318,7 +245,9 @@ func step(dt: float) -> void:
 		_fire_cannon()
 	if _edge(inp, "kit"):
 		use_kit()
-	_animate(dt, move_dir.length() * speed if _dash_t <= 0.0 else Balance.DASH_SPEED)
+	rig.animate(dt, velocity, aim, energy / maxf(energy_max, 1.0))
+	# Blink while invulnerable after a hit.
+	rig.visible = _iframes <= 0.0 or fmod(_iframes, 0.12) > 0.05 or _dash_t > 0.0
 
 
 func _tick_timers(dt: float) -> void:
@@ -328,14 +257,11 @@ func _tick_timers(dt: float) -> void:
 	_cannon_cd = maxf(_cannon_cd - dt, 0.0)
 	_iframes = maxf(_iframes - dt, 0.0)
 	_combo_t = maxf(_combo_t - dt, 0.0)
+	_slam_t = maxf(_slam_t - dt, 0.0)
 	if _regen_delay > 0.0:
 		_regen_delay -= dt
 	elif alive:
 		energy = minf(energy + Game.energy_regen() * dt, energy_max)
-	if _flash_t > 0.0:
-		_flash_t -= dt
-		if _flash_t <= 0.0:
-			_restore_mats()
 
 
 func _slide(motion: Vector3) -> void:
@@ -370,13 +296,14 @@ func _melee() -> void:
 		var hits: int = level.hit_circle(center, r, dmg * Balance.SLAM_MULT, Balance.MELEE_KNOCKBACK * 1.4,
 			Balance.SEISMIC_STUN if seismic else 0.0)
 		_slam_t = 0.38
+		rig.slam()
 		_melee_cd = Balance.MELEE_COOLDOWN * 1.6
 		Sfx.play("slam", -3.0)
 		Fx.shockwave(level.fx_root, center, Color(1.0, 0.8, 0.45), r)
 		level.shake(0.5 if hits > 0 else 0.3)
 	else:
 		_punch_side = 1 - _punch_side
-		_punch_t = 0.24
+		rig.punch(_punch_side)
 		var hits2: int = level.hit_arc(global_position, aim, Balance.MELEE_RANGE, Balance.MELEE_ARC, dmg,
 			Balance.MELEE_KNOCKBACK)
 		Sfx.play("punch" if hits2 == 0 else "hit", -6.0)
@@ -390,7 +317,7 @@ func _fire_cannon() -> void:
 	energy -= Balance.CANNON_ENERGY
 	_regen_delay = Balance.ENERGY_REGEN_DELAY
 	_cannon_cd = Balance.CANNON_COOLDOWN
-	_fire_t = 0.15
+	rig.fire()
 	var from: Vector3 = global_position + aim * 0.75 + Vector3(0.0, 1.35, 0.0)
 	var dmg: float = Balance.CANNON_DAMAGE * Game.cannon_mult()
 	var arcs: bool = Game.has_mod("arc")
@@ -430,13 +357,13 @@ func take_damage(amount: float, from: Vector3) -> bool:
 		amount -= absorbed
 	hp -= amount
 	_iframes = Balance.HIT_IFRAMES
-	_flash(Color(1.0, 0.35, 0.3))
 	Sfx.play("hurt", -6.0)
 	level.shake(0.25)
 	var push: Vector3 = global_position - from
 	push.y = 0.0
 	if push.length() > 0.01:
 		velocity += push.normalized() * 4.0
+	rig.hurt(push.normalized() if push.length() > 0.01 else -aim)
 	Fx.number(level.fx_root, global_position + Vector3(0.0, 2.3, 0.0), str(int(ceil(amount))), Color(1.0, 0.4, 0.35))
 	if hp <= 0.0:
 		_die()
@@ -447,6 +374,8 @@ func _die() -> void:
 	hp = 0.0
 	alive = false
 	_down_t = 0.0
+	rig.knock_down()
+	rig.visible = true
 	Sfx.play("die", -4.0)
 	Fx.explosion(level.fx_root, global_position + Vector3(0.0, 1.0, 0.0), color, 1.6)
 	died.emit(self)
@@ -459,8 +388,7 @@ func revive(at: Vector3, hp_share: float = 0.5) -> void:
 	_iframes = 1.5
 	global_position = at
 	velocity = Vector3.ZERO
-	_model.rotation.x = 0.0
-	_model.position.y = 0.0
+	rig.revive()
 	Fx.shockwave(level.fx_root, at, Color(0.4, 0.9, 1.0), 1.5)
 	Sfx.play("warp", -10.0)
 
@@ -471,64 +399,3 @@ func is_dashing() -> bool:
 
 func dash_ready() -> float:
 	return 1.0 - _dash_cd / maxf(Game.dash_cooldown(), 0.01)
-
-
-# --- Animation --------------------------------------------------------------------------
-
-func _animate(dt: float, speed: float) -> void:
-	var target_yaw: float = atan2(aim.x, aim.z)
-	_yaw = lerp_angle(_yaw, target_yaw, minf(dt * 18.0, 1.0))
-	_model.rotation.y = _yaw
-	var moving: float = clampf(speed / Balance.PLAYER_SPEED, 0.0, 1.4)
-	_walk += dt * (4.0 + 6.0 * moving)
-	var sw: float = sin(_walk) * 0.55 * moving
-	_leg_l.rotation.x = sw
-	_leg_r.rotation.x = -sw
-	_model.position.y = absf(cos(_walk)) * 0.06 * moving
-	var arm_l: float = -0.6 - sw * 0.8
-	var arm_r: float = -0.6 + sw * 0.8
-	_punch_t = maxf(_punch_t - dt, 0.0)
-	if _punch_t > 0.0:
-		# Fast jab out, slower pull back.
-		var k: float = 1.0 - _punch_t / 0.24
-		var ext: float = sin(minf(k * 2.2, 1.0) * PI * 0.5) * (1.0 - maxf(k - 0.45, 0.0) / 0.55)
-		if _punch_side == 0:
-			arm_l = lerpf(arm_l, -1.75, ext)
-		else:
-			arm_r = lerpf(arm_r, -1.75, ext)
-	_slam_t = maxf(_slam_t - dt, 0.0)
-	var torso_x: float = 0.38
-	if _slam_t > 0.0:
-		var k2: float = 1.0 - _slam_t / 0.38
-		var lift: float = sin(minf(k2 / 0.4, 1.0) * PI * 0.5) if k2 < 0.4 else 1.0 - (k2 - 0.4) / 0.6
-		arm_l = lerpf(-0.9, -3.0, lift)
-		arm_r = arm_l
-		torso_x = lerpf(0.55, 0.05, lift)
-	_arm_l.rotation.x = arm_l
-	_arm_r.rotation.x = arm_r
-	_torso.rotation.x = torso_x + absf(sw) * 0.05
-	_fire_t = maxf(_fire_t - dt, 0.0)
-	_head.rotation.x = -0.35 * (_fire_t / 0.15)
-	_mouth_mat.emission_energy_multiplier = 1.0 + 5.0 * (_fire_t / 0.15) + (energy / energy_max) * 0.6
-	_mouth.scale = Vector3(1.0, 1.0 + 1.5 * (_fire_t / 0.15), 1.0)
-	# Blink while invulnerable after a hit.
-	_model.visible = _iframes <= 0.0 or fmod(_iframes, 0.12) > 0.05 or _dash_t > 0.0
-
-
-func _animate_down(dt: float) -> void:
-	_down_t += dt
-	_model.rotation.x = lerpf(_model.rotation.x, -1.35, minf(dt * 8.0, 1.0))
-	_model.position.y = lerpf(_model.position.y, 0.35, minf(dt * 8.0, 1.0))
-	_model.visible = true
-
-
-func _flash(c: Color) -> void:
-	_flash_t = 0.09
-	var m: StandardMaterial3D = Art.mat(c, 1.2)
-	for part: MeshInstance3D in _body_parts:
-		part.material_override = m
-
-
-func _restore_mats() -> void:
-	for i: int in range(_body_parts.size()):
-		_body_parts[i].material_override = _body_mats[i]

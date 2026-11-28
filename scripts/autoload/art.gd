@@ -51,6 +51,65 @@ void fragment() {
 }
 """
 
+# Characters (players and robots) use sculpted meshes with colours in their vertices, shaded like
+# HD-2D pixel sprites: three hard light bands, a bright rim along the top edge of the silhouette,
+# and a 1-pixel outline from CHAR_OUTLINE_SHADER (an inverted hull grown a fixed number of screen
+# pixels, tinted by the part's own colour). `flash` blends the whole character towards
+# flash_color for hit flashes.
+const CHAR_SHADER: String = """
+shader_type spatial;
+render_mode cull_back, specular_disabled;
+uniform float flash = 0.0;
+uniform vec4 flash_color : source_color = vec4(1.0);
+uniform float rim = 0.55;
+uniform float brightness = 1.0;
+vec3 to_linear(vec3 c) {
+	return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+void vertex() {
+	COLOR.rgb = to_linear(COLOR.rgb);
+}
+void fragment() {
+	vec3 c = COLOR.rgb * brightness;
+	ALBEDO = mix(c, flash_color.rgb, flash);
+	ROUGHNESS = 1.0;
+	vec3 up_v = normalize((VIEW_MATRIX * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+	float edge = 1.0 - clamp(dot(NORMAL, VIEW), 0.0, 1.0);
+	float top = dot(NORMAL, up_v);
+	EMISSION = c * rim * step(0.6, edge) * step(0.2, top) + flash_color.rgb * flash * 0.5;
+}
+void light() {
+	float ndl = dot(NORMAL, LIGHT);
+	float band = ndl > 0.42 ? 1.0 : (ndl > -0.08 ? 0.58 : 0.2);
+	DIFFUSE_LIGHT += LIGHT_COLOR * ATTENUATION * band / PI;
+}
+"""
+
+const CHAR_OUTLINE_SHADER: String = """
+shader_type spatial;
+render_mode unshaded, cull_front, specular_disabled;
+uniform float width = 1.0;
+uniform vec4 line_color : source_color = vec4(0.04, 0.03, 0.06, 1.0);
+uniform float tint = 0.35;
+vec3 to_linear(vec3 c) {
+	return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+void vertex() {
+	vec4 clip = PROJECTION_MATRIX * (MODELVIEW_MATRIX * vec4(VERTEX, 1.0));
+	vec3 n = normalize(MODELVIEW_NORMAL_MATRIX * NORMAL);
+	vec2 dir = (PROJECTION_MATRIX * vec4(n, 0.0)).xy * VIEWPORT_SIZE;
+	float len = length(dir);
+	if (len > 0.00001) {
+		clip.xy += dir / len * width * 2.0 / VIEWPORT_SIZE * clip.w;
+	}
+	POSITION = clip;
+	COLOR.rgb = to_linear(COLOR.rgb);
+}
+void fragment() {
+	ALBEDO = mix(line_color.rgb, COLOR.rgb * 0.22, tint);
+}
+"""
+
 # Walls map their textures in world space (sides by height, tops by x/z), and dither away any
 # part of a wall that stands between the camera and a player so nobody gets lost behind one.
 const WALL_SHADER: String = """
@@ -110,6 +169,8 @@ var font: FontFile
 var theme: Theme
 var floor_shader: Shader
 var wall_shader: Shader
+var char_shader: Shader
+var _outline_mat: ShaderMaterial
 var _tilesets: Dictionary = {}  # tileset -> {key: Image}
 var _mats: Dictionary = {}
 var _meshes: Dictionary = {}
@@ -120,6 +181,12 @@ func _ready() -> void:
 	floor_shader.code = FLOOR_SHADER
 	wall_shader = Shader.new()
 	wall_shader.code = WALL_SHADER
+	char_shader = Shader.new()
+	char_shader.code = CHAR_SHADER
+	var outline: Shader = Shader.new()
+	outline.code = CHAR_OUTLINE_SHADER
+	_outline_mat = ShaderMaterial.new()
+	_outline_mat.shader = outline
 	font = load(FONT_PATH) as FontFile
 	if font != null:
 		font.antialiasing = TextServer.FONT_ANTIALIASING_NONE
@@ -151,6 +218,26 @@ func mat(color: Color, emission: float = 0.0) -> StandardMaterial3D:
 		m.emission = color
 		m.emission_energy_multiplier = emission
 	_mats[key] = m
+	return m
+
+
+## A new material for one character's sculpted parts (each character has its own so it can
+## flash on its own), with the shared outline pass.
+func char_material() -> ShaderMaterial:
+	var m: ShaderMaterial = ShaderMaterial.new()
+	m.shader = char_shader
+	m.next_pass = _outline_mat
+	return m
+
+
+## A new (unshared) glowing material for eyes, mouths and cores, so each character can pulse its own.
+func glow_mat(color: Color, energy: float) -> StandardMaterial3D:
+	var m: StandardMaterial3D = StandardMaterial3D.new()
+	m.albedo_color = color
+	m.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
+	m.emission_enabled = true
+	m.emission = color
+	m.emission_energy_multiplier = energy
 	return m
 
 

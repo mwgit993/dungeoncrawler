@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Dungeon Crawler (working title) is a Godot 4.7 (GDScript) isometric action RPG. The player is a gorilla robot with an arm smash and a mouth cannon. Players start on a hub ship, deploy to a map, kill the boss, extract, and spend scrap on upgrades. Co-op is drop-in local for up to 4 players; online is planned. Everything is generated in code: tile textures, 3D models built from primitive meshes, effects and sounds. The only file assets are the font (`assets/fonts/`, OFL) and `icon.svg`. Controls and the loop are in `README.md`.
+Dungeon Crawler (working title) is a Godot 4.7 (GDScript) isometric action RPG. The player is a gorilla robot with an arm smash and a mouth cannon. Players start on a hub ship, deploy to a map, kill the boss, extract, and spend scrap on upgrades. Co-op is drop-in local for up to 4 players; online is planned. Everything is generated in code: tile textures, sculpted character models, effects and sounds. The only file assets are the font (`assets/fonts/`, OFL) and `icon.svg`. Controls and the loop are in `README.md`.
 
 ## Commands
 
@@ -21,14 +21,14 @@ godot --path .                                              # play
 ## Code conventions
 
 - Use explicit static types everywhere. Don't use `:=` on a `Variant` (Dictionary lookups, untyped arrays); cast instead, e.g. `String(d["id"])` or `float(stats["hp"])`.
-- The whole scene tree is built in code. `scenes/main.tscn` is one `Node` with `main.gd`. The scripts use `class_name` (`Main`, `LevelMap`, `GorillaBot`, `RobotEnemy`, `Bolt`, `Pickup`, `Prop`, `Station`, `Decor`, `Fx`, `CameraRig`, `Hud`, `Balance`, `Maps`), so run `--import` after adding one.
+- The whole scene tree is built in code. `scenes/main.tscn` is one `Node` with `main.gd`. The scripts use `class_name` (`Main`, `LevelMap`, `GorillaBot`, `RobotEnemy`, `Rig`, `GorillaRig`, `EnemyRig`, `Sculpt`, `Bolt`, `Pickup`, `Prop`, `Station`, `Decor`, `Fx`, `CameraRig`, `Hud`, `Balance`, `Maps`), so run `--import` after adding one.
 - All gameplay numbers live in `scripts/balance.gd`, and maps are text grids in `scripts/maps.gd` (legend at the top). Keep tunables there rather than inline.
 - Input is polled per device, with no InputMap actions. P1 is keyboard/mouse plus joypad 0, and other pads join with START (`main._poll_joins`). Menus are real `Button`s and use the built-in `ui_*` actions. `ui_cancel` (Esc/B) closes them.
 - Text uses Press Start 2P at `font_size` 8, or 16 for titles. The game renders at 640x360 (`window/stretch/mode="viewport"`, integer scale) with nearest filtering, so HUD coordinates are in that pixel space.
 
 ## Architecture
 
-**Autoloads:** `Game` (progress, save/load, upgrade-adjusted stats such as `max_hp()`, `melee_mult()` and `mission_tier()`), `Art` (tile textures painted per tileset, cached materials and primitive meshes, the floor and wall shaders, the UI theme), `Sfx` (synthesized `AudioStreamWAV`s; `Sfx.play(name)` with an unknown name is silent).
+**Autoloads:** `Game` (progress, save/load, upgrade-adjusted stats such as `max_hp()`, `melee_mult()` and `mission_tier()`), `Art` (tile textures painted per tileset, cached materials and primitive meshes for props, the floor, wall and character shaders, the UI theme), `Sfx` (synthesized `AudioStreamWAV`s; `Sfx.play(name)` with an unknown name is silent).
 
 **`main.gd` (`Main`)** owns the `World` node, which holds the current `LevelMap`, a `Players` node and the `CameraRig`. It also owns the `Hud`. `mode` is `hub`, `mission` or `results`. `go_hub()` and `start_mission(id)` rebuild the level. Players persist across levels and are moved with `move_level`. Normal play wraps level changes in `_transition` (fade); the smoke test does them instantly. Pausing sets `world.process_mode = DISABLED`, and the HUD runs with `PROCESS_MODE_ALWAYS`. Station menus fill their rows from `Balance` (`_shop_entries`, `_aug_entries`, `_lab_entries`, `_mission_entries`), and purchases go through `_buy` and `_after_purchase`.
 
@@ -43,12 +43,18 @@ godot --path .                                              # play
 The wall shader dithers away wall pixels that sit between the camera and a player (`players` uniform, set every frame in `_process`). Custom shaders must give colour samplers `source_color`, or the sRGB tile colours render washed out.
 
 **Entities:** each entity has a `step(dt)` method that its `_process` calls, so `simulate()` can fast-forward them. They move with their own `_slide()` built on `move_and_collide`, not `move_and_slide`, so movement is deterministic for any dt.
-- **`GorillaBot`**: the player. Its model is boxes on pivot nodes animated in code, and its actions are `_melee` (punch combo, slam on every `COMBO_EVERY`th), `_fire_cannon`, dash and `use_kit`.
-- **`RobotEnemy`**: one script for every kind, with stats in `Balance.ENEMIES`. Its states are SLEEP → CHASE → WINDUP → RECOVER, plus CHARGE. `_think()` picks attacks per kind. Telegraphs are red ground decals. Bosses have phase 2 below half HP and summon capped minions (`minion = true`, little scrap).
+- **`GorillaBot`**: the player. Its actions are `_melee` (punch combo, slam on every `COMBO_EVERY`th), `_fire_cannon`, dash and `use_kit`. Its model is a `GorillaRig` (`rig`), told about each action (`punch`, `slam`, `fire`, `hurt`, `dash`, `knock_down`, `revive`) and animated with `rig.animate()` every step.
+- **`RobotEnemy`**: one script for every kind, with stats in `Balance.ENEMIES`. Its states are SLEEP → CHASE → WINDUP → RECOVER, plus CHARGE. `_think()` picks attacks per kind. Telegraphs are red ground decals. Bosses have phase 2 below half HP and summon capped minions (`minion = true`, little scrap). Its model is an `EnemyRig` (`rig`): `_animate()` passes it the state, the wind-up progress and the action, and it plays the strike when the state leaves WINDUP.
 - **`Bolt`**: distance-checked projectiles in sub-steps, with no physics bodies.
 - **`Pickup`**: scrap that flies to the nearest bot, and repair kits.
 - **`Prop`**: breakable crates and caches. Breaking one frees its A* cell.
 - **`Fx`**: self-freeing effects.
+
+**Character models** look like HD-2D pixel sprites that can still turn in any direction:
+- **`Sculpt`** builds a smooth mesh from soft primitives (`blob()` is a superellipsoid, `tube()` a smooth tube with round caps) with colours in the vertices. `Sculpt.cached(key, build)` builds each mesh once, so every enemy of a kind shares them. The gorilla's team-coloured meshes are cached per colour.
+- **`Rig`** (base of `GorillaRig` and `EnemyRig`) is a tree of joints holding sculpted parts and glowing parts (eyes, mouths, cores; `Art.glow_mat`, no outline). It owns the shared effects: hit flash, a squash-and-stretch spring on `root` (`impact()`), recoil tilt (`recoil()`) and blinking. Every animation is code-driven from time and state, with nothing keyframed.
+- **`Art.CHAR_SHADER`** shades sculpted parts with three hard light bands and a rim highlight along the top of the silhouette. Its `next_pass`, `CHAR_OUTLINE_SHADER`, is an inverted hull grown a fixed number of screen pixels, so the outline stays 1 px at the 640x360 render size. Each character has its own `Art.char_material()`, so it flashes on its own.
+- The smoke test's `_smoke_rigs` builds every rig and checks its parts, its height, the hit flash and each kind's strike.
 
 Physics layers: 1 world, 2 players, 4 enemies. Actors only collide with the world, and push each other apart with `_separation()`.
 
@@ -56,7 +62,7 @@ Physics layers: 1 world, 2 players, 4 enemies. Actors only collide with the worl
 
 ## Content touchpoints
 
-- **Enemy kind:** add an entry to `Balance.ENEMIES`, a `_build_<kind>` model and an `_animate` branch in `robot_enemy.gd`, and a branch in `_think()` (plus the attack in `_update_windup` if it's new). For a map character, add it to `LevelMap.ENEMY_CHARS`, the legend in `maps.gd`, and the legend string in `main._smoke_check_maps`.
+- **Enemy kind:** add an entry to `Balance.ENEMIES`, a `_build_<kind>` model and an `_anim_<kind>` branch in `enemy_rig.gd`, its height range and strike in `main._smoke_rigs`, and a branch in `_think()` (plus the attack in `_update_windup` if it's new). For a map character, add it to `LevelMap.ENEMY_CHARS`, the legend in `maps.gd`, and the legend string in `main._smoke_check_maps`.
 - **Mission:** add a `Maps.MISSIONS` entry (rows, tileset `foundry`/`ash`/`ship`, boss kind) plus `Balance.MISSION_TIER` and `MISSION_UNLOCK`. The smoke test checks the map's shape, boss and unlock rule, and that the boss is reachable.
 - **Station:** add a `Balance.STATION_UNLOCK` entry, a model in `Station.setup` plus `TITLES`, a character in `LevelMap.STATION_CHARS`, and a menu in `main.open_station_menu`.
 - **Shop item / augment / mod:** add a `Balance.SHOP` / `AUGMENTS` / `LAB` entry. Its effect goes in `Game` getters (augments), `main._on_*_pick` (consumables) or `GorillaBot` (mods, via `Game.has_mod`).

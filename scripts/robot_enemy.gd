@@ -52,16 +52,9 @@ var _facing: Vector3 = Vector3(0.0, 0.0, 1.0)
 var _windup_time: float = 0.3
 var _dt: float = 1.0 / 60.0
 
-var _model: Node3D
-var _parts: Array[MeshInstance3D] = []
-var _mats: Array[Material] = []
-var _legs: Array[Node3D] = []
-var _arms: Array[Node3D] = []
-var _glow: StandardMaterial3D
+var rig: EnemyRig
 var _telegraph: MeshInstance3D = null
 var _tele_mat: StandardMaterial3D = null
-var _flash_t: float = 0.0
-var _anim: float = 0.0
 var _hp_scale: float = 1.0
 
 
@@ -92,24 +85,10 @@ func setup(lvl: LevelMap, k: String) -> void:
 	cs.shape = cap
 	cs.position = Vector3(0.0, cap.height * 0.5, 0.0)
 	add_child(cs)
-	_model = Node3D.new()
-	add_child(_model)
-	_glow = StandardMaterial3D.new()
-	_glow.emission_enabled = true
-	_glow.diffuse_mode = BaseMaterial3D.DIFFUSE_TOON
-	match kind:
-		"gunner":
-			_build_gunner()
-		"bruiser":
-			_build_bruiser()
-		"foreman":
-			_build_foreman()
-		"warden":
-			_build_warden()
-		_:
-			_build_scuttler()
-	for part: MeshInstance3D in _parts:
-		_mats.append(part.material_override)
+	rig = EnemyRig.new()
+	rig.name = "Rig"
+	add_child(rig)
+	rig.setup(kind)
 	Art.blob_shadow(self, radius * 1.15)
 
 
@@ -119,140 +98,6 @@ func rescale(old_players: int, new_players: int) -> void:
 	max_hp *= f
 	hp *= f
 	damage = float(stats["damage"]) * Balance.damage_mult(level.tier, new_players)
-
-
-# --- Models -----------------------------------------------------------------------------
-
-func _set_glow(c: Color, energy: float) -> void:
-	_glow.albedo_color = c
-	_glow.emission = c
-	_glow.emission_energy_multiplier = energy
-
-
-func _p(parent: Node3D, mesh: Mesh, mat: Material, pos: Vector3, rot: Vector3 = Vector3.ZERO) -> MeshInstance3D:
-	var mi: MeshInstance3D = Art.part(parent, mesh, mat, pos, rot)
-	if mat != _glow:
-		_parts.append(mi)
-	return mi
-
-
-func _pivot(parent: Node3D, pos: Vector3) -> Node3D:
-	var n: Node3D = Node3D.new()
-	n.position = pos
-	parent.add_child(n)
-	return n
-
-
-func _build_scuttler() -> void:
-	var shell: StandardMaterial3D = Art.mat(Color(0.58, 0.36, 0.22))
-	var dark: StandardMaterial3D = Art.mat(Color(0.2, 0.18, 0.18))
-	_set_glow(Color(1.0, 0.2, 0.15), 2.5)
-	_p(_model, Art.cylinder(0.32, 0.42, 0.26, 8), shell, Vector3(0.0, 0.42, 0.0))
-	_p(_model, Art.cylinder(0.2, 0.3, 0.14, 8), dark, Vector3(0.0, 0.6, -0.04))
-	_p(_model, Art.box(Vector3(0.3, 0.1, 0.12)), _glow, Vector3(0.0, 0.46, 0.38))
-	for i: int in range(6):
-		var side: float = -1.0 if i < 3 else 1.0
-		var row: float = float(i % 3) - 1.0
-		var leg: Node3D = _pivot(_model, Vector3(0.3 * side, 0.42, row * 0.24))
-		leg.rotation.y = row * 0.5 * side
-		_p(leg, Art.box(Vector3(0.42, 0.07, 0.07)), dark, Vector3(0.22 * side, 0.04, 0.0), Vector3(0, 0, -25.0 * side))
-		_p(leg, Art.box(Vector3(0.07, 0.42, 0.07)), dark, Vector3(0.42 * side, -0.16, 0.0))
-		_legs.append(leg)
-
-
-func _build_gunner() -> void:
-	var body: StandardMaterial3D = Art.mat(Color(0.42, 0.46, 0.38))
-	var dark: StandardMaterial3D = Art.mat(Color(0.18, 0.2, 0.2))
-	_set_glow(Color(1.0, 0.85, 0.2), 2.2)
-	for s: float in [-1.0, 1.0]:
-		var leg: Node3D = _pivot(_model, Vector3(0.22 * s, 0.75, 0.0))
-		_p(leg, Art.box(Vector3(0.18, 0.75, 0.22)), dark, Vector3(0.0, -0.37, 0.0))
-		_p(leg, Art.box(Vector3(0.26, 0.1, 0.36)), dark, Vector3(0.0, -0.72, 0.06))
-		_legs.append(leg)
-	_p(_model, Art.box(Vector3(0.75, 0.6, 0.55)), body, Vector3(0.0, 1.08, 0.0))
-	_p(_model, Art.box(Vector3(0.42, 0.28, 0.4)), body, Vector3(0.0, 1.52, 0.04))
-	_p(_model, Art.box(Vector3(0.34, 0.08, 0.04)), _glow, Vector3(0.0, 1.55, 0.25))
-	var arm: Node3D = _pivot(_model, Vector3(0.48, 1.15, 0.0))
-	_p(arm, Art.box(Vector3(0.24, 0.24, 0.5)), dark, Vector3(0.0, 0.0, 0.15))
-	_p(arm, Art.cylinder(0.08, 0.1, 0.55, 6), dark, Vector3(0.0, 0.0, 0.58), Vector3(90.0, 0, 0))
-	_p(arm, Art.box(Vector3(0.1, 0.1, 0.05)), _glow, Vector3(0.0, 0.0, 0.87))
-	_arms.append(arm)
-	_p(_model, Art.box(Vector3(0.2, 0.4, 0.2)), dark, Vector3(-0.47, 1.0, 0.0))
-
-
-func _build_bruiser() -> void:
-	var body: StandardMaterial3D = Art.mat(Color(0.5, 0.26, 0.22))
-	var dark: StandardMaterial3D = Art.mat(Color(0.2, 0.17, 0.17))
-	var stripe: StandardMaterial3D = Art.mat(Color(0.9, 0.7, 0.15))
-	_set_glow(Color(1.0, 0.25, 0.15), 2.4)
-	for s: float in [-1.0, 1.0]:
-		var leg: Node3D = _pivot(_model, Vector3(0.4 * s, 0.7, -0.05))
-		_p(leg, Art.box(Vector3(0.42, 0.7, 0.46)), dark, Vector3(0.0, -0.35, 0.0))
-		_legs.append(leg)
-	_p(_model, Art.box(Vector3(1.5, 1.05, 1.0)), body, Vector3(0.0, 1.25, 0.0))
-	_p(_model, Art.box(Vector3(1.52, 0.16, 1.02)), stripe, Vector3(0.0, 0.85, 0.0))
-	_p(_model, Art.box(Vector3(0.5, 0.36, 0.42)), dark, Vector3(0.0, 1.85, 0.25))
-	_p(_model, Art.box(Vector3(0.4, 0.08, 0.04)), _glow, Vector3(0.0, 1.87, 0.47))
-	for s2: float in [-1.0, 1.0]:
-		var arm: Node3D = _pivot(_model, Vector3(0.95 * s2, 1.55, 0.0))
-		_p(arm, Art.box(Vector3(0.4, 0.75, 0.42)), body, Vector3(0.0, -0.35, 0.0))
-		_p(arm, Art.box(Vector3(0.7, 0.62, 0.7)), dark, Vector3(0.0, -0.95, 0.1))
-		_arms.append(arm)
-
-
-func _build_foreman() -> void:
-	var body: StandardMaterial3D = Art.mat(Color(0.82, 0.62, 0.18))
-	var dark: StandardMaterial3D = Art.mat(Color(0.18, 0.18, 0.2))
-	var metal: StandardMaterial3D = Art.mat(Color(0.45, 0.46, 0.5))
-	_set_glow(Color(1.0, 0.3, 0.15), 2.6)
-	# Tracked base.
-	for s: float in [-1.0, 1.0]:
-		var track: Node3D = _pivot(_model, Vector3(0.95 * s, 0.35, 0.0))
-		_p(track, Art.box(Vector3(0.6, 0.7, 2.3)), dark, Vector3.ZERO)
-		_p(track, Art.box(Vector3(0.64, 0.12, 2.0)), metal, Vector3(0.0, 0.3, 0.0))
-		_legs.append(track)
-	_p(_model, Art.box(Vector3(1.9, 0.9, 1.9)), body, Vector3(0.0, 1.1, -0.1))
-	_p(_model, Art.box(Vector3(1.95, 0.18, 1.95)), dark, Vector3(0.0, 0.7, -0.1))
-	# Cab with glowing windows.
-	_p(_model, Art.box(Vector3(1.3, 0.85, 1.1)), body, Vector3(0.0, 1.95, -0.3))
-	_p(_model, Art.box(Vector3(1.0, 0.3, 0.05)), _glow, Vector3(0.0, 2.05, 0.27))
-	_p(_model, Art.box(Vector3(0.2, 0.7, 0.2)), dark, Vector3(0.5, 2.7, -0.6))
-	_p(_model, Art.cylinder(0.12, 0.12, 0.25, 6), Art.mat(Color(1.0, 0.6, 0.15), 2.0), Vector3(0.5, 3.15, -0.6))
-	# Giant claw arms.
-	for s2: float in [-1.0, 1.0]:
-		var arm: Node3D = _pivot(_model, Vector3(1.15 * s2, 1.55, 0.3))
-		_p(arm, Art.box(Vector3(0.45, 0.45, 1.4)), metal, Vector3(0.0, 0.0, 0.6))
-		_p(arm, Art.box(Vector3(0.7, 0.55, 0.5)), dark, Vector3(0.0, -0.1, 1.4))
-		_p(arm, Art.box(Vector3(0.18, 0.5, 0.55)), body, Vector3(0.22, -0.45, 1.6), Vector3(20.0, 0, 0))
-		_p(arm, Art.box(Vector3(0.18, 0.5, 0.55)), body, Vector3(-0.22, -0.45, 1.6), Vector3(20.0, 0, 0))
-		_arms.append(arm)
-
-
-func _build_warden() -> void:
-	var rock: StandardMaterial3D = Art.mat(Color(0.25, 0.2, 0.2))
-	var plate: StandardMaterial3D = Art.mat(Color(0.38, 0.3, 0.27))
-	_set_glow(Color(1.0, 0.45, 0.1), 2.8)
-	for s: float in [-1.0, 1.0]:
-		var leg: Node3D = _pivot(_model, Vector3(0.6 * s, 1.0, 0.0))
-		_p(leg, Art.box(Vector3(0.6, 1.0, 0.7)), rock, Vector3(0.0, -0.5, 0.0))
-		_p(leg, Art.box(Vector3(0.75, 0.2, 0.9)), plate, Vector3(0.0, -0.92, 0.08))
-		_legs.append(leg)
-	_p(_model, Art.box(Vector3(1.7, 1.3, 1.2)), rock, Vector3(0.0, 1.75, 0.0))
-	_p(_model, Art.ball(0.5, 10), _glow, Vector3(0.0, 1.8, 0.45))
-	_p(_model, Art.box(Vector3(0.9, 0.55, 0.8)), plate, Vector3(0.0, 2.65, 0.1))
-	_p(_model, Art.box(Vector3(0.6, 0.1, 0.05)), _glow, Vector3(0.0, 2.65, 0.52))
-	for s2: float in [-1.0, 1.0]:
-		var arm: Node3D = _pivot(_model, Vector3(1.15 * s2, 2.2, 0.0))
-		_p(arm, Art.box(Vector3(0.55, 0.9, 0.6)), plate, Vector3(0.0, -0.4, 0.0))
-		_p(arm, Art.box(Vector3(0.8, 0.8, 0.8)), rock, Vector3(0.0, -1.2, 0.15))
-		_p(arm, Art.box(Vector3(0.12, 0.6, 0.12)), _glow, Vector3(0.0, -1.1, 0.56))
-		_arms.append(arm)
-	# Floating armour plates orbit the core.
-	for i: int in range(3):
-		var orb: Node3D = _pivot(_model, Vector3(0.0, 2.0, 0.0))
-		orb.rotation.y = TAU * float(i) / 3.0
-		_p(orb, Art.box(Vector3(0.5, 0.35, 0.12)), plate, Vector3(0.0, 0.0, 1.25))
-		_arms.append(orb)
 
 
 # --- Update -----------------------------------------------------------------------------
@@ -268,11 +113,6 @@ func step(dt: float) -> void:
 	hit_recent += dt
 	_attack_cd = maxf(_attack_cd - dt, 0.0)
 	_state_t += dt
-	if _flash_t > 0.0:
-		_flash_t -= dt
-		if _flash_t <= 0.0:
-			for i: int in range(_parts.size()):
-				_parts[i].material_override = _mats[i]
 	_knock = _knock * exp(-9.0 * dt)
 	if _state == State.SLEEP:
 		_sense_t -= dt
@@ -286,10 +126,8 @@ func step(dt: float) -> void:
 		_stun -= dt
 		_clear_telegraph()
 		_slide(_knock * dt)
-		_model.rotation.z = sin(_stun * 30.0) * 0.08
 		_animate(dt, 0.0)
 		return
-	_model.rotation.z = 0.0
 	if is_boss:
 		_summon_t -= dt
 		_special_t -= dt
@@ -327,6 +165,7 @@ func wake() -> void:
 	awake = true
 	_state = State.CHASE
 	_state_t = 0.0
+	rig.woke()
 	if is_boss:
 		level.boss_woke.emit(self)
 		Sfx.play("alarm", -6.0)
@@ -532,6 +371,7 @@ func _shoot_at_target() -> void:
 	var d: Vector3 = _target.global_position + Vector3(0.0, 1.0, 0.0) - muzzle
 	d.y = 0.0
 	level.spawn_bolt(muzzle, d.normalized(), float(stats.get("shot_speed", 10.0)), damage, float(stats["range"]) + 4.0, false, self)
+	rig.shot()
 	Sfx.play("eshot", -12.0)
 
 
@@ -634,10 +474,7 @@ func take_damage(amount: float, dir: Vector3, knockback: float, stun: float = 0.
 	if is_boss and phase == 1 and hp < max_hp * 0.5:
 		phase = 2
 		Sfx.play("alarm", -8.0)
-	_flash_t = 0.07
-	var white: StandardMaterial3D = Art.mat(Color(1, 1, 1), 1.0)
-	for part: MeshInstance3D in _parts:
-		part.material_override = white
+	rig.hurt(dir, heft >= 0.8)
 	Fx.sparks(level.fx_root, global_position + Vector3(0.0, 0.9, 0.0) - dir * radius * 0.5, Color(1.0, 0.8, 0.4), 5, 4.0)
 	Fx.number(level.fx_root, global_position + Vector3(0.0, 1.6 + radius, 0.0), str(int(round(amount))), Color(1.0, 0.95, 0.6))
 	if hp <= 0.0:
@@ -650,7 +487,7 @@ func _die() -> void:
 	_clear_telegraph()
 	collision_layer = 0
 	var size: float = radius * (2.4 if is_boss else 1.6)
-	Fx.explosion(level.fx_root, global_position + Vector3(0.0, 0.8, 0.0), _glow.emission, size)
+	Fx.explosion(level.fx_root, global_position + Vector3(0.0, 0.8, 0.0), rig.glow_color, size)
 	Fx.debris(level.fx_root, global_position + Vector3(0.0, 0.8, 0.0), Color(0.4, 0.4, 0.42), 8 if not is_boss else 24)
 	Sfx.play("boom" if radius > 0.8 else "die", -4.0 if is_boss else -8.0)
 	level.shake(1.0 if is_boss else 0.2)
@@ -697,41 +534,9 @@ func has_telegraph() -> bool:
 
 
 func _animate(dt: float, spd: float) -> void:
-	_anim += dt * (3.0 + spd * 2.0)
 	var yaw: float = atan2(_facing.x, _facing.z)
 	rotation.y = lerp_angle(rotation.y, yaw, minf(dt * (6.0 if is_boss else 12.0), 1.0))
-	var moving: float = clampf(spd / maxf(speed, 0.1), 0.0, 1.5)
 	var windup: float = 0.0
 	if _state == State.WINDUP:
 		windup = clampf(_state_t / maxf(_windup_time, 0.01), 0.0, 1.0)
-	match kind:
-		"scuttler":
-			for i: int in range(_legs.size()):
-				_legs[i].rotation.x = sin(_anim * 2.0 + float(i) * 1.7) * 0.5 * moving
-			_model.position.y = absf(sin(_anim * 2.0)) * 0.05 * moving - windup * 0.12
-		"gunner":
-			for i: int in range(_legs.size()):
-				_legs[i].rotation.x = sin(_anim + PI * float(i)) * 0.5 * moving
-			if not _arms.is_empty():
-				_arms[0].rotation.x = -0.15 * windup
-			_glow.emission_energy_multiplier = 2.2 + windup * 4.0
-		"warden":
-			for i: int in range(_legs.size()):
-				_legs[i].rotation.x = sin(_anim + PI * float(i)) * 0.35 * moving
-			for j: int in range(_arms.size()):
-				if j >= 2:
-					_arms[j].rotation.y += dt * 1.5
-				else:
-					_arms[j].rotation.x = -windup * 2.4 if _action == "slam" else sin(_anim + PI * float(j)) * 0.2
-			_glow.emission_energy_multiplier = (4.0 if phase == 2 else 2.8) + windup * 4.0 + sin(_anim * 3.0) * 0.4
-		_:
-			for i: int in range(_legs.size()):
-				_legs[i].rotation.x = sin(_anim + PI * float(i)) * 0.4 * moving if kind != "foreman" else 0.0
-			for j: int in range(_arms.size()):
-				if _action == "slam" and _state == State.WINDUP:
-					_arms[j].rotation.x = -windup * 2.2
-				elif _state == State.CHARGE:
-					_arms[j].rotation.x = -0.4
-				else:
-					_arms[j].rotation.x = lerpf(_arms[j].rotation.x, sin(_anim + PI * float(j)) * 0.25, minf(dt * 8.0, 1.0))
-			_model.position.y = absf(sin(_anim)) * 0.04 * moving
+	rig.animate(dt, spd / maxf(speed, 0.1), _state, windup, _action, phase, _stun > 0.0)

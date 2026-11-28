@@ -583,6 +583,7 @@ func _run_smoke_test() -> void:
 	p1.scripted = true
 	_smoke_check_maps()
 	_smoke_hub(p1)
+	_smoke_rigs(p1)
 	_smoke_foundry(p1)
 	_smoke_upgrades(p1)
 	_smoke_ashfall(p1)
@@ -623,6 +624,58 @@ func _smoke_check_maps() -> void:
 			_check(bosses == 1 and exits == 1, "%s has one boss and one extraction pad" % m["id"])
 			_check(Balance.ENEMIES.has(String(m["boss"])), "%s boss exists in Balance" % m["id"])
 			_check(Balance.MISSION_TIER.has(String(m["id"])) and Balance.MISSION_UNLOCK.has(String(m["id"])), "%s has a tier and unlock rule" % m["id"])
+
+
+## Every character model builds, uses the outlined character material, stands about as tall as
+## it should, flashes when hit and plays its attack animations.
+func _smoke_rigs(p1: GorillaBot) -> void:
+	var dt: float = 1.0 / 60.0
+	var g: GorillaRig = p1.rig
+	_check(g != null and g.sculpted_parts() >= 8, "gorilla rig has its sculpted parts")
+	_check(g.visual_height() > 1.6 and g.visual_height() < 2.6, "gorilla rig is about 2 m tall (%.2f)" % g.visual_height())
+	g.hurt(Vector3.RIGHT)
+	_check(g.flashing(), "gorilla rig flashes when hurt")
+	g.slam()
+	var squashed: bool = false
+	for i: int in range(40):
+		g.animate(dt, Vector3.ZERO, Vector3.FORWARD, 1.0)
+		squashed = squashed or g.root.scale.y < 0.97
+	_check(squashed and not g.flashing(), "gorilla slam squashes the body and the flash fades")
+	g.punch(0)
+	g.fire()
+	g.dash()
+	for i2: int in range(30):
+		g.animate(dt, Vector3(4.0, 0.0, 2.0), Vector3.RIGHT, 0.5)
+	g.knock_down()
+	for i3: int in range(30):
+		g.animate_down(dt)
+	g.revive()
+	g.animate(dt, Vector3.ZERO, Vector3.FORWARD, 1.0)
+	var heights: Dictionary = {"scuttler": [0.4, 1.0], "gunner": [1.2, 2.0], "bruiser": [1.7, 2.6],
+		"foreman": [2.4, 3.6], "warden": [2.6, 3.8]}
+	var strikes: Dictionary = {"scuttler": "bite", "gunner": "burst", "bruiser": "slam", "foreman": "slam", "warden": "nova"}
+	for kind: String in Balance.ENEMIES.keys():
+		_check(heights.has(kind) and strikes.has(kind), "%s has rig checks in _smoke_rigs" % kind)
+		var e: RobotEnemy = level.spawn_enemy(kind, p1.global_position + Vector3(40.0, 0.0, 40.0), false)
+		e.awake = true  # so the test hit below doesn't wake it (a boss would raise the HUD warning)
+		var r: EnemyRig = e.rig
+		_check(r != null and r.sculpted_parts() >= 1, "%s rig has sculpted parts" % kind)
+		var hgt: Array = heights.get(kind, [0.0, 99.0])
+		_check(r.visual_height() > float(hgt[0]) and r.visual_height() < float(hgt[1]), "%s rig height %.2f" % [kind, r.visual_height()])
+		e.take_damage(1.0, Vector3.RIGHT, 0.0)
+		_check(r.flashing(), "%s flashes when hit" % kind)
+		var act: String = String(strikes.get(kind, "slam"))
+		for i4: int in range(20):
+			r.animate(dt, 1.0, RobotEnemy.State.CHASE, 0.0, "", 2, false)
+			r.animate(dt, 0.0, RobotEnemy.State.WINDUP, float(i4) / 20.0, act, 2, true)
+		r.shot()
+		r.animate(dt, 0.0, RobotEnemy.State.RECOVER, 0.0, act, 2, false)
+		_check(r.striking() == act, "%s plays its %s strike" % [kind, act])
+		for i5: int in range(40):
+			r.animate(dt, 0.0, RobotEnemy.State.SLEEP, 0.0, "", 1, false)
+		_check(not r.flashing() and r.striking() == "", "%s settles after the strike" % kind)
+		level.enemies.erase(e)
+		e.queue_free()
 
 
 func _smoke_hub(p1: GorillaBot) -> void:
