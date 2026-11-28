@@ -21,7 +21,7 @@ signal status_changed
 
 const PORT: int = 24565
 const MAX_CLIENTS: int = 3
-const PROTOCOL: int = 2               # 2: arm blades (the "slash" rig cue and effect)
+const PROTOCOL: int = 3               # 2: arm blades (the "slash" rig cue and effect); 3: random maps (the seed)
 const SNAPSHOT_RATE: float = 1.0 / 20.0
 const UI_SOUNDS: Array[String] = ["ui", "buy", "cant"]
 

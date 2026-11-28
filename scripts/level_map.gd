@@ -365,7 +365,7 @@ func _build_grid() -> void:
 
 func _place_things() -> void:
 	var rng: RandomNumberGenerator = RandomNumberGenerator.new()
-	rng.seed = hash(id)
+	rng.seed = hash(id) + int(def.get("seed", 0))  # the same on a client: it has the same seed
 	var deco: Node3D = _child("Props")
 	for z: int in range(h):
 		for x: int in range(w):
