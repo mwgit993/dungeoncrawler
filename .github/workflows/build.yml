@@ -1,4 +1,4 @@
-name: Build, Auto-Merge & Publish Dungeon Crawler (.exe)
+name: Build, Auto-Merge & Publish Dungeon Crawler (Windows + macOS)
 
 on:
   push:
@@ -110,8 +110,96 @@ jobs:
             $changeDesc = ($mainInfo.commit.message -split "`n")[0]
           }
           $stamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-dd HH:mm 'UTC'")
-          $notes = "**Latest Change:** $changeDesc`n**Commit:** ``$shortSha`` ($stamp)`n`n### How to Play`n1. Download **DungeonCrawler-Windows.zip** below.`n2. Extract the folder anywhere (keep ``DungeonCrawler.exe`` and ``DungeonCrawler.pck`` together in the same folder!).`n3. Double-click **DungeonCrawler.exe**!"
+          $notes = "**Latest Change:** $changeDesc`n**Commit:** ``$shortSha`` ($stamp)`n`n### How to Play (Windows)`n1. Download **DungeonCrawler-Windows.zip** below.`n2. Extract the folder anywhere (keep ``DungeonCrawler.exe`` and ``DungeonCrawler.pck`` together in the same folder!).`n3. Double-click **DungeonCrawler.exe**!`n`n### How to Play (Mac)`n1. Download **DungeonCrawler-macOS.zip** below (it appears a few minutes after the Windows build) and double-click it to unzip.`n2. Right-click **Dungeon Crawler.app** and choose **Open**. The first time, macOS may say it can't check the app: open **System Settings > Privacy & Security** and click **Open Anyway**.`n`n### Online co-op`nThe host picks **HOST ONLINE GAME** in the pause menu (Esc); friends pick **JOIN ONLINE GAME** and type the host's IP address. Same Wi-Fi works as is; across the internet, install Tailscale on both computers and use the host's Tailscale address, or forward UDP port 24565 to the host."
 
           # Delete & recreate the 'latest' Release + Git tag so timestamps and Source code zip both update to right now!
           gh release delete latest -R $repo --cleanup-tag --yes 2>$null
           gh release create latest "DungeonCrawler-Windows.zip" -R $repo --target $mainInfo.sha --title "Dungeon Crawler — Latest Playable Build ($shortSha)" --notes $notes
+
+  # The Mac build: the same smoke test on macOS, then the official (signed) Godot app with the
+  # game packed inside it (Contents/Resources/Godot.pck runs on launch), renamed, re-signed
+  # ad hoc, and added to the same 'latest' release. Runs after the Windows job, which merges.
+  build-macos:
+    name: Smoke Test & Package Dungeon Crawler for macOS
+    needs: build-windows
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.ref }}
+          fetch-depth: 0
+
+      - name: Merge latest main when validating a Pull Request
+        if: github.event_name == 'pull_request'
+        run: |
+          git config user.name "Dungeon Crawler CI"
+          git config user.email "ci@dungeoncrawler.local"
+          git fetch origin main
+          git merge origin/main --no-edit
+
+      - name: Download Godot 4.7.2 (macOS universal)
+        run: |
+          curl -sSL -o godot.zip "https://github.com/godotengine/godot-builds/releases/download/4.7.2-stable/Godot_v4.7.2-stable_macos.universal.zip"
+          ditto -x -k godot.zip godot_bin
+          ls godot_bin
+
+      - name: Import project & run the smoke test on macOS
+        run: |
+          GODOT="$PWD/godot_bin/Godot.app/Contents/MacOS/Godot"
+          "$GODOT" --headless --path . --import
+          out=$("$GODOT" --headless --path . --quit-after 30 -- --smoke-test 2>&1) || true
+          echo "$out"
+          if ! echo "$out" | grep -q "SMOKE_TEST_PASSED"; then
+            echo "::error::Smoke test did not pass on macOS"
+            exit 1
+          fi
+
+      - name: Package DungeonCrawler-macOS.zip
+        run: |
+          GODOT="$PWD/godot_bin/Godot.app/Contents/MacOS/Godot"
+          mkdir -p builds/macos
+          "$GODOT" --headless --path . --export-pack "Windows" builds/macos/DungeonCrawler.pck
+          test -f builds/macos/DungeonCrawler.pck
+          APP="builds/macos/Dungeon Crawler.app"
+          ditto godot_bin/Godot.app "$APP"
+          cp builds/macos/DungeonCrawler.pck "$APP/Contents/Resources/Godot.pck"
+          PLIST="$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName Dungeon Crawler" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Dungeon Crawler" "$PLIST" || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Dungeon Crawler" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.mgames.dungeoncrawler" "$PLIST"
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep "$APP"
+          # The packed app really starts the game (headless smoke test, no --path).
+          out=$("$APP/Contents/MacOS/Godot" --headless --quit-after 30 -- --smoke-test 2>&1) || true
+          echo "$out" | tail -5
+          echo "$out" | grep -q "SMOKE_TEST_PASSED" || { echo "::error::The packed Mac app did not run the game"; exit 1; }
+          (cd builds/macos && ditto -c -k --keepParent "Dungeon Crawler.app" ../../DungeonCrawler-macOS.zip)
+          ls -l DungeonCrawler-macOS.zip
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DungeonCrawler-macOS
+          path: DungeonCrawler-macOS.zip
+
+      - name: Add the Mac build to the latest Release
+        if: >-
+          (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') ||
+          (github.event_name == 'pull_request' && !github.event.pull_request.draft &&
+           (github.event.pull_request.user.login == 'jay-zimphy' ||
+            github.event.pull_request.user.login == 'justgetjay' ||
+            github.event.pull_request.user.login == 'mwgit993'))
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+        run: |
+          repo="${{ github.repository }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            state=$(gh pr view "$PR_NUM" -R "$repo" --json state -q .state)
+            if [ "$state" != "MERGED" ]; then
+              echo "PR #$PR_NUM was not merged; not publishing."
+              exit 0
+            fi
+          fi
+          gh release upload latest DungeonCrawler-macOS.zip -R "$repo" --clobber

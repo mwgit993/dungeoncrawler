@@ -53,6 +53,12 @@ var _windup_time: float = 0.3
 var _dt: float = 1.0 / 60.0
 
 var rig: EnemyRig
+var net_id: int = 0                  # matches on the host and its clients (see LevelMap)
+var _net_pos: Vector3 = Vector3.ZERO
+var _net_spd: float = 0.0
+var _net_windup: float = 0.0
+var _net_stun: bool = false
+var _net_aux: Vector3 = Vector3.ZERO
 var _telegraph: MeshInstance3D = null
 var _tele_mat: StandardMaterial3D = null
 var _hp_scale: float = 1.0
@@ -103,6 +109,9 @@ func rescale(old_players: int, new_players: int) -> void:
 # --- Update -----------------------------------------------------------------------------
 
 func _process(delta: float) -> void:
+	if level.puppet:
+		_puppet_step(minf(delta, 0.05))
+		return
 	step(minf(delta, 0.05))
 
 
@@ -166,6 +175,7 @@ func wake() -> void:
 	_state = State.CHASE
 	_state_t = 0.0
 	rig.woke()
+	Net.ev("erig", [net_id, "woke", []])
 	if is_boss:
 		level.boss_woke.emit(self)
 		Sfx.play("alarm", -6.0)
@@ -372,6 +382,7 @@ func _shoot_at_target() -> void:
 	d.y = 0.0
 	level.spawn_bolt(muzzle, d.normalized(), float(stats.get("shot_speed", 10.0)), damage, float(stats["range"]) + 4.0, false, self)
 	rig.shot()
+	Net.ev("erig", [net_id, "shot", []])
 	Sfx.play("eshot", -12.0)
 
 
@@ -392,7 +403,7 @@ func _update_charge(dt: float) -> void:
 			continue
 		if p.global_position.distance_to(global_position) <= radius + GorillaBot.RADIUS + 0.3:
 			if p.take_damage(damage * 1.2, global_position - _charge_dir):
-				p.velocity += _charge_dir * 10.0
+				p.push_back(_charge_dir * 10.0)
 			_charge_hit.append(p)
 	var moved: float = before.distance_to(global_position)
 	if _state_t > 1.1 or moved < spd * dt * 0.3:
@@ -475,6 +486,7 @@ func take_damage(amount: float, dir: Vector3, knockback: float, stun: float = 0.
 		phase = 2
 		Sfx.play("alarm", -8.0)
 	rig.hurt(dir, heft >= 0.8)
+	Net.ev("erig", [net_id, "hurt", [dir, heft >= 0.8]])
 	Fx.sparks(level.fx_root, global_position + Vector3(0.0, 0.9, 0.0) - dir * radius * 0.5, Color(1.0, 0.8, 0.4), 5, 4.0)
 	Fx.number(level.fx_root, global_position + Vector3(0.0, 1.6 + radius, 0.0), str(int(round(amount))), Color(1.0, 0.95, 0.6))
 	if hp <= 0.0:
@@ -540,3 +552,76 @@ func _animate(dt: float, spd: float) -> void:
 	if _state == State.WINDUP:
 		windup = clampf(_state_t / maxf(_windup_time, 0.01), 0.0, 1.0)
 	rig.animate(dt, spd / maxf(speed, 0.1), _state, windup, _action, phase, _stun > 0.0)
+
+
+# --- Online co-op -----------------------------------------------------------------------
+
+## Host: this robot in a snapshot. `aux` places a wind-up's telegraph: the slam's centre, or the
+## charge's direction.
+func net_entry() -> Array:
+	var windup: float = 0.0
+	if _state == State.WINDUP:
+		windup = clampf(_state_t / maxf(_windup_time, 0.01), 0.0, 1.0)
+	var aux: Vector3 = _slam_center if _action == "slam" else (_charge_dir if _action == "charge" else Vector3.ZERO)
+	var flags: int = (1 if awake else 0) | (2 if _stun > 0.0 else 0) | (4 if minion else 0)
+	return [net_id, kind, global_position, _facing, velocity.length(), int(_state), windup, _action,
+		phase, flags, hp, max_hp, hit_recent, aux]
+
+
+## Client: takes the host's state for this robot, and shows or clears its telegraph.
+func net_apply(e: Array) -> void:
+	_net_pos = e[2]
+	var f: Vector3 = e[3]
+	if f.length() > 0.01:
+		_facing = f
+	_net_spd = float(e[4])
+	var st: int = int(e[5])
+	_net_windup = float(e[6])
+	var act: String = String(e[7])
+	phase = int(e[8])
+	var flags: int = int(e[9])
+	awake = (flags & 1) != 0
+	_net_stun = (flags & 2) != 0
+	minion = (flags & 4) != 0
+	hp = float(e[10])
+	max_hp = float(e[11])
+	hit_recent = float(e[12])
+	_net_aux = e[13]
+	var winding: bool = st == State.WINDUP and act in ["slam", "charge", "nova"]
+	if winding and (_telegraph == null or act != _action or _state != State.WINDUP):
+		match act:
+			"slam":
+				_show_ring(_net_aux, float(stats.get("slam_radius", 2.5)), 0.0)
+			"charge":
+				_show_lane(_net_pos, _net_aux, float(stats.get("charge_speed", 14.0)) * 1.1, radius * 2.0)
+			"nova":
+				_show_ring(_net_pos, 2.5, 0.0)
+	elif not winding and _telegraph != null:
+		_clear_telegraph()
+	_state = st as State
+	_action = act
+
+
+## Client: smoothed toward the host's position, animated from its state.
+func _puppet_step(dt: float) -> void:
+	if not alive:
+		return
+	hit_recent += dt
+	global_position = global_position.lerp(_net_pos, 1.0 - exp(-14.0 * dt))
+	if global_position.distance_to(_net_pos) > 5.0:
+		global_position = _net_pos
+	if _tele_mat != null:
+		_tele_mat.albedo_color.a = 0.15 + 0.35 * _net_windup + 0.1 * sin(float(Time.get_ticks_msec()) * 0.03)
+		if _action == "slam" or _action == "nova":
+			var r: float = float(stats.get("slam_radius", 2.5)) if _action == "slam" else 2.5
+			_telegraph.scale = Vector3(r * _net_windup, 1.0, r * _net_windup)
+	var yaw: float = atan2(_facing.x, _facing.z)
+	rotation.y = lerp_angle(rotation.y, yaw, minf(dt * (6.0 if is_boss else 12.0), 1.0))
+	rig.animate(dt, _net_spd / maxf(speed, 0.1), _state, _net_windup, _action, phase, _net_stun)
+
+
+## Client: the host says this robot is gone (its explosion arrives as an effect).
+func net_remove() -> void:
+	alive = false
+	_clear_telegraph()
+	queue_free()

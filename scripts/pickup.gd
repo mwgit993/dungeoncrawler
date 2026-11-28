@@ -13,6 +13,8 @@ var _vy: float = 0.0
 var _t: float = 0.0
 var _model: Node3D
 var _attract: GorillaBot = null
+var net_id: int = 0
+var _net_pos: Vector3 = Vector3.ZERO
 
 
 func setup(lvl: LevelMap, k: String, v: int) -> void:
@@ -43,6 +45,9 @@ func pop(v: Vector3) -> void:
 
 
 func _process(delta: float) -> void:
+	if level.puppet:
+		_puppet_step(minf(delta, 0.05))
+		return
 	step(minf(delta, 0.05))
 
 
@@ -99,3 +104,24 @@ func _collect_kit(bot: GorillaBot) -> void:
 	else:
 		return
 	queue_free()
+
+
+# --- Online co-op -----------------------------------------------------------------------
+
+## Host: this pickup in a snapshot (its hop height rides in y).
+func net_entry() -> Array:
+	return [net_id, kind, value, Vector3(position.x, _height, position.z)]
+
+
+## Client: slides toward where the host has it, spinning and bobbing as usual.
+func net_apply(e: Array) -> void:
+	var p: Vector3 = e[3]
+	_net_pos = Vector3(p.x, 0.0, p.z)
+	_height = p.y
+
+
+func _puppet_step(dt: float) -> void:
+	_t += dt
+	_model.rotation.y += dt * 3.0
+	position = position.lerp(_net_pos, 1.0 - exp(-16.0 * dt))
+	_model.position.y = _height + sin(_t * 3.0) * 0.06

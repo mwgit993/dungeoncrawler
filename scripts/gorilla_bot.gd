@@ -36,6 +36,24 @@ var scripted: bool = false           # smoke test: read `sim` instead of devices
 var sim: Dictionary = {}
 var using_pad: bool = false          # last input came from the controller (for button prompts)
 
+# Online co-op (see Net). "" is a normal local bot. On the host, "remote" is a client's bot: it
+# goes where that client says and attacks with its buttons (net_state). On a client, "local" is
+# our own bot, moved here and now while the host does the fighting, and "puppet" is everyone
+# else's, drawn where the host's snapshots put them.
+var net_mode: String = ""
+var peer_id: int = 0
+var net_state: Array = []            # host: the client's last input (see net_input)
+var tp_seq: int = 0                  # bumps when the host moves the bot itself (level start, reboot)
+var _net_pos: Vector3 = Vector3.ZERO
+var _net_vel: Vector3 = Vector3.ZERO
+var _net_kit_n: int = 0
+var _net_int_n: int = 0
+var _net_dashing: bool = false
+var _net_blink: bool = false
+var _net_tp_seen: int = -1
+var _kit_presses: int = 0            # client: presses counted up, so the host can't miss a tap
+var _int_presses: int = 0
+
 var _dash_t: float = 0.0
 var _dash_cd: float = 0.0
 var _dash_dir: Vector3 = Vector3.ZERO
@@ -100,6 +118,8 @@ func move_level(lvl: LevelMap, pos: Vector3) -> void:
 	level = lvl
 	global_position = pos
 	velocity = Vector3.ZERO
+	_net_pos = pos
+	tp_seq += 1
 
 
 # --- Input ------------------------------------------------------------------------------
@@ -202,14 +222,25 @@ func _process(delta: float) -> void:
 func step(dt: float) -> void:
 	interact_pressed = false
 	pause_pressed = false
+	if net_mode == "puppet":
+		_puppet_step(dt)
+		return
 	_tick_timers(dt)
 	if not alive:
 		_down_t += dt
 		rig.animate_down(dt)
 		return
+	if net_mode == "remote":
+		_remote_step(dt)
+		return
 	var inp: Dictionary = _read_input() if input_enabled else {}
 	interact_pressed = _edge(inp, "interact")
 	pause_pressed = _edge(inp, "pause")
+	if net_mode == "local":
+		if interact_pressed:
+			_int_presses += 1
+		if _edge(inp, "kit"):
+			_kit_presses += 1
 	var mv: Vector2 = inp.get("move", Vector2.ZERO)
 	var move_dir: Vector3 = screen_to_world(mv)
 	# Aim: mouse, right stick, a scripted direction, or the way we're walking.
@@ -231,13 +262,19 @@ func step(dt: float) -> void:
 		_dash_cd = Game.dash_cooldown()
 		Sfx.play("dash", -8.0)
 		Fx.afterimage(level.fx_root, global_position, color)
-		rig.dash()
+		_rig("dash", [])
 	if _dash_t > 0.0:
 		velocity = _dash_dir * Balance.DASH_SPEED
 	else:
 		var slow: float = 0.55 if _slam_t > 0.0 else 1.0
 		velocity = velocity.move_toward(move_dir * speed * slow, Balance.PLAYER_ACCEL * dt)
 	_slide(velocity * dt)
+	if net_mode == "local":
+		# Our own bot online: the host swings and fires for us from the buttons we send.
+		net_state = [bool(inp.get("melee", false)), bool(inp.get("cannon", false))]
+		rig.animate(dt, velocity, aim, energy / maxf(energy_max, 1.0))
+		rig.visible = not _net_blink or fmod(float(Time.get_ticks_msec()) * 0.001, 0.12) > 0.05 or _dash_t > 0.0
+		return
 	# Attacks.
 	if bool(inp.get("melee", false)) and _melee_cd <= 0.0:
 		_melee()
@@ -296,14 +333,14 @@ func _melee() -> void:
 		var hits: int = level.hit_circle(center, r, dmg * Balance.SLAM_MULT, Balance.MELEE_KNOCKBACK * 1.4,
 			Balance.SEISMIC_STUN if seismic else 0.0)
 		_slam_t = 0.38
-		rig.slam()
+		_rig("slam", [])
 		_melee_cd = Balance.MELEE_COOLDOWN * 1.6
 		Sfx.play("slam", -3.0)
 		Fx.shockwave(level.fx_root, center, Color(1.0, 0.8, 0.45), r)
 		level.shake(0.5 if hits > 0 else 0.3)
 	else:
 		_punch_side = 1 - _punch_side
-		rig.punch(_punch_side)
+		_rig("punch", [_punch_side])
 		var hits2: int = level.hit_arc(global_position, aim, Balance.MELEE_RANGE, Balance.MELEE_ARC, dmg,
 			Balance.MELEE_KNOCKBACK)
 		Sfx.play("punch" if hits2 == 0 else "hit", -6.0)
@@ -317,7 +354,7 @@ func _fire_cannon() -> void:
 	energy -= Balance.CANNON_ENERGY
 	_regen_delay = Balance.ENERGY_REGEN_DELAY
 	_cannon_cd = Balance.CANNON_COOLDOWN
-	rig.fire()
+	_rig("fire", [])
 	var from: Vector3 = global_position + aim * 0.75 + Vector3(0.0, 1.35, 0.0)
 	var dmg: float = Balance.CANNON_DAMAGE * Game.cannon_mult()
 	var arcs: bool = Game.has_mod("arc")
@@ -362,8 +399,8 @@ func take_damage(amount: float, from: Vector3) -> bool:
 	var push: Vector3 = global_position - from
 	push.y = 0.0
 	if push.length() > 0.01:
-		velocity += push.normalized() * 4.0
-	rig.hurt(push.normalized() if push.length() > 0.01 else -aim)
+		push_back(push.normalized() * 4.0)
+	_rig("hurt", [push.normalized() if push.length() > 0.01 else -aim])
 	Fx.number(level.fx_root, global_position + Vector3(0.0, 2.3, 0.0), str(int(ceil(amount))), Color(1.0, 0.4, 0.35))
 	if hp <= 0.0:
 		_die()
@@ -374,7 +411,7 @@ func _die() -> void:
 	hp = 0.0
 	alive = false
 	_down_t = 0.0
-	rig.knock_down()
+	_rig("knock_down", [])
 	rig.visible = true
 	Sfx.play("die", -4.0)
 	Fx.explosion(level.fx_root, global_position + Vector3(0.0, 1.0, 0.0), color, 1.6)
@@ -387,8 +424,10 @@ func revive(at: Vector3, hp_share: float = 0.5) -> void:
 	energy = energy_max
 	_iframes = 1.5
 	global_position = at
+	_net_pos = at
+	tp_seq += 1
 	velocity = Vector3.ZERO
-	rig.revive()
+	_rig("revive", [])
 	Fx.shockwave(level.fx_root, at, Color(0.4, 0.9, 1.0), 1.5)
 	Sfx.play("warp", -10.0)
 
@@ -399,3 +438,109 @@ func is_dashing() -> bool:
 
 func dash_ready() -> float:
 	return 1.0 - _dash_cd / maxf(Game.dash_cooldown(), 0.01)
+
+
+## Knockback. A client moves its own bot, so the host sends it the push instead.
+func push_back(v: Vector3) -> void:
+	velocity += v
+	if net_mode == "remote":
+		Net.ev_to(slot, "push", [v])
+
+
+## Plays an animation cue on the model, and on everyone's screen when hosting online.
+func _rig(cue: String, args: Array) -> void:
+	rig.callv(cue, args)
+	Net.ev("prig", [slot, cue, args])
+
+
+# --- Online co-op -----------------------------------------------------------------------
+
+## Host: a client's bot. It stands where the client put it and fights with its buttons.
+func _remote_step(dt: float) -> void:
+	if net_state.size() >= 8:
+		var pos: Vector3 = net_state[0]
+		if level.walkable(LevelMap.to_cell(pos)) or not level.walkable(LevelMap.to_cell(global_position)):
+			global_position = Vector3(pos.x, 0.0, pos.z)
+		velocity = net_state[1]
+		var a: Vector3 = net_state[2]
+		if a.length() > 0.01:
+			aim = Vector3(a.x, 0.0, a.z).normalized()
+		var dashing: bool = bool(net_state[3])
+		if dashing and not _net_dashing:
+			# The client already showed its own dash; everyone else sees it from here.
+			Net.skip_slot = slot
+			Sfx.play("dash", -8.0)
+			Fx.afterimage(level.fx_root, global_position, color)
+			_rig("dash", [])
+			Net.skip_slot = -1
+		_net_dashing = dashing
+		_dash_t = Balance.DASH_TIME if dashing else 0.0
+		if bool(net_state[4]) and _melee_cd <= 0.0:
+			_melee()
+		if bool(net_state[5]) and _cannon_cd <= 0.0:
+			_fire_cannon()
+		var kit_n: int = int(net_state[6])
+		if kit_n > _net_kit_n:
+			use_kit()
+		_net_kit_n = kit_n
+		var int_n: int = int(net_state[7])
+		interact_pressed = int_n > _net_int_n
+		_net_int_n = int_n
+	rig.animate(dt, velocity, aim, energy / maxf(energy_max, 1.0))
+	rig.visible = _iframes <= 0.0 or fmod(_iframes, 0.12) > 0.05 or _dash_t > 0.0
+
+
+## Client: what our own bot sends the host every frame.
+func net_input() -> Array:
+	var buttons: Array = net_state if net_state.size() >= 2 else [false, false]
+	return [global_position, velocity, aim, _dash_t > 0.0, bool(buttons[0]) and alive,
+		bool(buttons[1]) and alive, _kit_presses, _int_presses]
+
+
+## Host: this bot in a snapshot.
+func net_entry() -> Array:
+	var flags: int = (1 if alive else 0) | (2 if _dash_t > 0.0 else 0) | (4 if _iframes > 0.0 else 0)
+	return [slot, global_position, velocity, aim, hp, max_hp, shield, energy, energy_max, flags,
+		respawn_left, tp_seq]
+
+
+## Client: takes the host's numbers for this bot. Our own bot keeps walking where we steer it,
+## unless the host moved it (a new level, a reboot next to a teammate).
+func net_apply(e: Array) -> void:
+	hp = float(e[4])
+	max_hp = float(e[5])
+	shield = float(e[6])
+	energy = float(e[7])
+	energy_max = float(e[8])
+	var flags: int = int(e[9])
+	alive = (flags & 1) != 0
+	_net_blink = (flags & 4) != 0
+	respawn_left = float(e[10])
+	var seq: int = int(e[11])
+	_net_pos = e[1]
+	_net_vel = e[2]
+	if net_mode == "puppet":
+		var a: Vector3 = e[3]
+		if a.length() > 0.01:
+			aim = a
+		_dash_t = Balance.DASH_TIME if (flags & 2) != 0 else 0.0
+		if seq != _net_tp_seen:
+			global_position = _net_pos
+	elif seq != _net_tp_seen and _net_tp_seen >= 0:
+		global_position = _net_pos
+		velocity = Vector3.ZERO
+	_net_tp_seen = seq
+
+
+## Client: someone else's bot, smoothed toward the host's latest position.
+func _puppet_step(dt: float) -> void:
+	_net_pos += _net_vel * dt
+	global_position = global_position.lerp(_net_pos, 1.0 - exp(-14.0 * dt))
+	if global_position.distance_to(_net_pos) > 4.0:
+		global_position = _net_pos
+	velocity = _net_vel
+	if not alive:
+		rig.animate_down(dt)
+		return
+	rig.animate(dt, velocity, aim, energy / maxf(energy_max, 1.0))
+	rig.visible = not _net_blink or fmod(float(Time.get_ticks_msec()) * 0.001, 0.12) > 0.05 or _dash_t > 0.0

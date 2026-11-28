@@ -40,6 +40,8 @@ func _ready() -> void:
 
 
 func play(name: String, vol_db: float = -6.0, jitter: float = 0.05) -> void:
+	if name not in Net.UI_SOUNDS:
+		Net.ev("sfx", [name, vol_db, jitter]) # online co-op: clients hear the host's world too
 	if not _streams.has(name) or Game.sfx_volume <= 0.01:
 		return
 	var now: int = Time.get_ticks_msec()

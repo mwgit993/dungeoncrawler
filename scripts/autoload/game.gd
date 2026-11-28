@@ -19,6 +19,7 @@ var clears: Dictionary = {}     # mission id -> times cleared
 var seen_unlocks: Dictionary = {} # station/mission id -> true once its unlock has been announced
 var sfx_volume: float = 0.8
 var fullscreen: bool = false
+var last_ip: String = ""        # the last host address typed into JOIN ONLINE GAME
 
 
 func _ready() -> void:
@@ -143,10 +144,14 @@ func _aug_per(id: String) -> int:
 # --- Save / load ------------------------------------------------------------------------
 
 func save_game() -> void:
+	# Joined to someone's online game, this holds the host's team progress, not ours.
+	if Net.is_client():
+		return
 	var data: Dictionary = {
 		"version": SAVE_VERSION, "scrap": scrap, "kits": kits, "kit_racks": kit_racks,
 		"shield_cell": shield_cell, "augments": augments, "mods": mods, "clears": clears,
 		"seen_unlocks": seen_unlocks, "sfx_volume": sfx_volume, "fullscreen": fullscreen,
+		"last_ip": last_ip,
 	}
 	var f: FileAccess = FileAccess.open(save_path, FileAccess.WRITE)
 	if f == null:
@@ -182,6 +187,36 @@ func load_game() -> void:
 			seen_unlocks[String(k)] = true
 	sfx_volume = clampf(float(d.get("sfx_volume", 0.8)), 0.0, 1.0)
 	fullscreen = bool(d.get("fullscreen", false))
+	last_ip = String(d.get("last_ip", ""))
+
+
+# --- Online co-op: the team's progress travels from the host to its clients -------------
+
+func team_data() -> Dictionary:
+	return {"scrap": scrap, "kits": kits, "kit_racks": kit_racks, "shield_cell": shield_cell,
+		"augments": augments, "mods": mods, "clears": clears}
+
+
+## A client takes on the host's progress while it plays there (and never saves it).
+func apply_team(d: Dictionary) -> void:
+	scrap = int(d.get("scrap", scrap))
+	kit_racks = int(d.get("kit_racks", kit_racks))
+	kits = int(d.get("kits", kits))
+	shield_cell = bool(d.get("shield_cell", shield_cell))
+	augments = _int_dict(d.get("augments", {}))
+	clears = _int_dict(d.get("clears", {}))
+	mods = {}
+	var m: Variant = d.get("mods", {})
+	if m is Dictionary:
+		for k: Variant in (m as Dictionary).keys():
+			mods[String(k)] = bool((m as Dictionary)[k])
+	scrap_changed.emit()
+
+
+## Back to this machine's own save after leaving an online game.
+func restore_own() -> void:
+	reset_progress()
+	load_game()
 
 
 func _int_dict(v: Variant) -> Dictionary:

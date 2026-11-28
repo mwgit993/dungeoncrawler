@@ -37,6 +37,15 @@ var players: Array[GorillaBot] = []
 var boss: RobotEnemy = null
 var counters: Dictionary = {}  # event tallies (shots, slams, charges) for the smoke test
 
+# Online co-op. On a client the level is `puppet`: built from the same map, but nothing in it
+# thinks; robots, pickups and crates follow the host's snapshots (net_apply_entities) and bolts
+# fly from the host's events. Robots are numbered in map order, so ids match on both machines.
+var puppet: bool = false
+var _next_enemy_id: int = 1
+var _next_id: int = 1
+var _net_bolts: Dictionary = {}    # client: id -> Bolt
+var _net_pickups: Dictionary = {}  # client: id -> Pickup
+
 var astar: AStarGrid2D = AStarGrid2D.new()
 var _shot_block: PackedByteArray = PackedByteArray()
 var _wall_mats: Array[ShaderMaterial] = []
@@ -382,11 +391,13 @@ func _place_things() -> void:
 					else:
 						var prop: Prop = Prop.new()
 						prop.setup(self, "cache" if c == "$" else "crate", Vector2i(x, z), rng)
+						prop.net_id = props.size()
 						prop.position = pos
 						deco.add_child(prop)
 						props.append(prop)
 				"+":
-					spawn_pickup("kit", pos, 0)
+					if not puppet:
+						spawn_pickup("kit", pos, 0)
 				"B":
 					if not is_hub:
 						boss = spawn_enemy(String(def["boss"]), pos, false)
@@ -531,10 +542,16 @@ func simulate(seconds: float, dt: float = 1.0 / 60.0) -> void:
 
 # --- Spawning ---------------------------------------------------------------------------
 
-func spawn_enemy(kind: String, pos: Vector3, awake: bool) -> RobotEnemy:
+func spawn_enemy(kind: String, pos: Vector3, awake: bool, with_id: int = 0) -> RobotEnemy:
 	var e: RobotEnemy = RobotEnemy.new()
 	e.setup(self, kind)
+	if with_id > 0:
+		e.net_id = with_id
+	else:
+		e.net_id = _next_enemy_id
+		_next_enemy_id += 1
 	e.position = pos
+	e._net_pos = pos
 	actors.add_child(e)
 	enemies.append(e)
 	if awake:
@@ -546,15 +563,20 @@ func spawn_bolt(from: Vector3, dir: Vector3, speed: float, damage: float, max_ra
 		friendly: bool, source: Node3D, arcs: bool = false) -> Bolt:
 	var b: Bolt = Bolt.new()
 	b.setup(self, dir, speed, damage, max_range, friendly, source, arcs)
+	b.net_id = _next_id
+	_next_id += 1
 	count("player_bolts" if friendly else "enemy_bolts")
 	b.position = from
 	bolts.add_child(b)
+	Net.ev("bolt", [b.net_id, from, b.dir, speed, friendly, max_range])
 	return b
 
 
 func spawn_pickup(kind: String, pos: Vector3, value: int) -> Pickup:
 	var k: Pickup = Pickup.new()
 	k.setup(self, kind, value)
+	k.net_id = _next_id
+	_next_id += 1
 	k.position = pos
 	pickups.add_child(k)
 	return k
@@ -705,3 +727,104 @@ func count(key: String) -> void:
 
 func shake(amount: float) -> void:
 	shake_requested.emit(amount)
+	Net.ev("shake", [amount])
+
+
+# --- Online co-op -----------------------------------------------------------------------
+
+## Host: every robot, pickup and crate still in the level, plus the extraction pad.
+func net_entities() -> Array:
+	var es: Array = []
+	for e: RobotEnemy in enemies:
+		if e.alive:
+			es.append(e.net_entry())
+	var ks: Array = []
+	for k: Node in pickups.get_children():
+		if k is Pickup and not k.is_queued_for_deletion():
+			ks.append((k as Pickup).net_entry())
+	var ps: PackedInt32Array = PackedInt32Array()
+	for p: Prop in props:
+		ps.append(p.net_id)
+	return [es, ks, ps, exit_active]
+
+
+## Client: makes this level match the host's. Robots and crates the host no longer has are
+## removed (their explosions arrive as effects); robots it summoned since are added.
+func net_apply_entities(d: Array) -> void:
+	var seen: Dictionary = {}
+	for ev: Variant in d[0]:
+		var ea: Array = ev
+		var eid: int = int(ea[0])
+		seen[eid] = true
+		var e: RobotEnemy = _enemy_by_id(eid)
+		if e == null:
+			e = spawn_enemy(String(ea[1]), ea[2], false, eid)
+			e.global_position = ea[2]
+		e.net_apply(ea)
+	for e2: RobotEnemy in enemies.duplicate():
+		if not seen.has(e2.net_id):
+			enemies.erase(e2)
+			e2.net_remove()
+	var kseen: Dictionary = {}
+	for kv: Variant in d[1]:
+		var ka: Array = kv
+		var kid: int = int(ka[0])
+		kseen[kid] = true
+		var kv2: Variant = _net_pickups.get(kid, null)
+		var k: Pickup = kv2 as Pickup if kv2 != null and is_instance_valid(kv2) else null
+		if k == null:
+			k = Pickup.new()
+			k.setup(self, String(ka[1]), int(ka[2]))
+			k.net_id = kid
+			var kp: Vector3 = ka[3]
+			k.position = Vector3(kp.x, 0.0, kp.z)
+			pickups.add_child(k)
+			_net_pickups[kid] = k
+		k.net_apply(ka)
+	for kid2: Variant in _net_pickups.keys():
+		if not kseen.has(kid2):
+			var gone: Variant = _net_pickups[kid2]
+			if gone != null and is_instance_valid(gone):
+				(gone as Pickup).queue_free()
+			_net_pickups.erase(kid2)
+	var alive_props: PackedInt32Array = d[2]
+	for p: Prop in props.duplicate():
+		if not alive_props.has(p.net_id):
+			props.erase(p)
+			p.queue_free()
+	if bool(d[3]) and not exit_active:
+		activate_exit()
+
+
+func _enemy_by_id(eid: int) -> RobotEnemy:
+	for e: RobotEnemy in enemies:
+		if e.net_id == eid:
+			return e
+	return null
+
+
+## Client: a bolt the host fired; it flies here until it hits a wall, runs out or the host
+## says it hit something.
+func net_spawn_bolt(a: Array) -> void:
+	var b: Bolt = Bolt.new()
+	b.setup(self, a[2], float(a[3]), 0.0, float(a[5]), bool(a[4]), null, false)
+	b.net_id = int(a[0])
+	b.puppet = true
+	b.position = a[1]
+	bolts.add_child(b)
+	_net_bolts[b.net_id] = b
+
+
+func net_end_bolt(bid: int) -> void:
+	# A bolt that already hit a wall here has freed itself.
+	var b: Variant = _net_bolts.get(bid, null)
+	if b != null and is_instance_valid(b):
+		(b as Bolt).queue_free()
+	_net_bolts.erase(bid)
+
+
+func net_prop_hit(pid: int) -> void:
+	for p: Prop in props:
+		if p.net_id == pid:
+			p.flash_hit()
+			return
