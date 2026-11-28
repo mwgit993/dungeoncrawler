@@ -393,7 +393,13 @@ func _unhandled_input(event: InputEvent) -> void:
 		Game.toggle_fullscreen()
 		return
 	if hud.is_menu_open():
-		if event.is_action_pressed("ui_cancel") and hud.menu_kind != "results":
+		var pad: InputEventJoypadButton = event as InputEventJoypadButton
+		var pad_press: bool = pad != null and pad.pressed
+		if pad_press and pad.button_index == JOY_BUTTON_A:
+			hud.press_focused()
+			get_viewport().set_input_as_handled()
+		elif (event.is_action_pressed("ui_cancel") or (pad_press and (pad.button_index == JOY_BUTTON_B
+				or (pad.button_index == JOY_BUTTON_START and hud.menu_kind == "pause")))) and hud.menu_kind != "results":
 			close_menus()
 			get_viewport().set_input_as_handled()
 		return
@@ -1147,8 +1153,49 @@ func _smoke_hub(p1: GorillaBot) -> void:
 	_check(hud.menu_button_count() == Maps.MISSIONS.size(), "mission table lists every mission")
 	hud.press("ashfall")
 	_check(mode == "hub", "locked mission can't be started")
-	hud.press("foundry")
-	_check(mode == "mission" and level.id == "foundry", "foundry deploys from the mission table")
+	# Deploy with a controller: A on the Foundry row.
+	var foundry_row: int = -1
+	for i: int in range(hud.menu_button_count()):
+		if hud.menu_button(i).text.contains("FOUNDRY"):
+			foundry_row = i
+	_check(foundry_row >= 0, "the mission table has a Foundry row")
+	if foundry_row >= 0:
+		hud.menu_button(foundry_row).grab_focus()
+		_smoke_pad(JOY_BUTTON_A)
+	else:
+		hud.press("foundry")
+	_check(mode == "mission" and level.id == "foundry", "A on a controller deploys foundry from the mission table")
+
+
+## A controller's A presses the selected menu row and B backs out (Godot's ui_accept / ui_cancel
+## don't include them). Leaves the pause menu open, as it found it.
+func _smoke_check_pad_menus() -> void:
+	var b_sound: Button = hud.menu_button(2)
+	_check(b_sound != null and b_sound.text.begins_with("SOUND"), "pause menu's 3rd row is SOUND")
+	if b_sound == null:
+		return
+	b_sound.grab_focus()
+	var vol: float = Game.sfx_volume
+	_smoke_pad(JOY_BUTTON_A)
+	_check(hud.is_menu_open() and not is_equal_approx(Game.sfx_volume, vol), "A on a controller presses the selected pause row")
+	Game.sfx_volume = vol
+	_smoke_pad(JOY_BUTTON_B)
+	_check(not hud.is_menu_open() and not paused, "B on a controller closes the pause menu")
+	open_pause()
+	_smoke_pad(JOY_BUTTON_START)
+	_check(not hud.is_menu_open() and not paused, "START on a controller closes the pause menu")
+	open_pause()
+	hud.menu_button(0).grab_focus()
+	_smoke_pad(JOY_BUTTON_A)
+	_check(not hud.is_menu_open() and not paused, "A on RESUME resumes")
+	open_pause()
+
+
+func _smoke_pad(button: JoyButton) -> void:
+	var ev: InputEventJoypadButton = InputEventJoypadButton.new()
+	ev.button_index = button
+	ev.pressed = true
+	_unhandled_input(ev)
 
 
 func _count_chars(chars: String) -> int:
@@ -1547,5 +1594,6 @@ func _smoke_save_and_pause() -> void:
 	_check(Game.save_path.contains("smoke"), "smoke test uses its own save file")
 	open_pause()
 	_check(paused and world.process_mode == Node.PROCESS_MODE_DISABLED and hud.menu_kind == "pause", "pause freezes the world")
+	_smoke_check_pad_menus()
 	close_menus()
 	_check(not paused and world.process_mode == Node.PROCESS_MODE_INHERIT, "resume unfreezes")

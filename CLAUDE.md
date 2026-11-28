@@ -23,7 +23,7 @@ godot --path .                                              # play
 - Use explicit static types everywhere. Don't use `:=` on a `Variant` (Dictionary lookups, untyped arrays); cast instead, e.g. `String(d["id"])` or `float(stats["hp"])`.
 - The whole scene tree is built in code. `scenes/main.tscn` is one `Node` with `main.gd`. The scripts use `class_name` (`Main`, `LevelMap`, `GorillaBot`, `RobotEnemy`, `Rig`, `GorillaRig`, `EnemyRig`, `Sculpt`, `Bolt`, `Pickup`, `Prop`, `Station`, `Decor`, `Fx`, `CameraRig`, `Hud`, `Balance`, `Maps`, `MapGen`), so run `--import` after adding one.
 - All gameplay numbers live in `scripts/balance.gd`, and maps are text grids in `scripts/maps.gd` (legend at the top). Keep tunables there rather than inline.
-- Input is polled per device, with no InputMap actions. P1 is keyboard/mouse plus joypad 0, and other pads join with START (`main._poll_joins`). Menus are real `Button`s and use the built-in `ui_*` actions. `ui_cancel` (Esc/B) closes them.
+- Input is polled per device, with no InputMap actions. P1 is keyboard/mouse plus joypad 0, and other pads join with START (`main._poll_joins`). Menus are real `Button`s. The d-pad, stick and arrow keys move the selection through the built-in `ui_up` / `ui_down` actions, and Enter / Space press it (`ui_accept`). Godot 4.7's `ui_accept` and `ui_cancel` don't include a pad's A and B, so `main._unhandled_input` handles them: A presses the selected row (`hud.press_focused`), and B (or START in the pause menu) closes the menu like Esc does.
 - Text uses Press Start 2P at `font_size` 8, or 16 for titles. The game renders at 640x360 (`window/stretch/mode="viewport"`, integer scale) with nearest filtering, so HUD coordinates are in that pixel space.
 
 ## Architecture
