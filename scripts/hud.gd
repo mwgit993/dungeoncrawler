@@ -57,6 +57,7 @@ func _process(delta: float) -> void:
 
 
 func toast(text: String, sub: String = "", color: Color = Color(1.0, 0.9, 0.5), time: float = 3.2) -> void:
+	Net.ev("toast", [text, sub, color, time])
 	_toast = text
 	_toast_sub = sub
 	_toast_col = color
@@ -140,7 +141,11 @@ func _draw_overlay() -> void:
 		_text(Vector2(0, 92), _toast, Color(_toast_col.r, _toast_col.g, _toast_col.b, a), 16, HORIZONTAL_ALIGNMENT_CENTER, 640)
 		if _toast_sub != "":
 			_text(Vector2(0, 108), _toast_sub, Color(0.9, 0.92, 1.0, a), 8, HORIZONTAL_ALIGNMENT_CENTER, 640)
-	if lvl.is_hub and main.players.size() < 4 and not is_menu_open():
+	if Net.is_host():
+		_text(Vector2(0, 352), "ONLINE: HOSTING, %d JOINED" % Net.client_count(), Color(0.5, 1.0, 0.7, 0.85), 8, HORIZONTAL_ALIGNMENT_RIGHT, 632)
+	elif Net.is_client():
+		_text(Vector2(0, 352), "ONLINE: IN THE HOST'S GAME", Color(0.5, 1.0, 0.7, 0.85), 8, HORIZONTAL_ALIGNMENT_RIGHT, 632)
+	elif lvl.is_hub and main.players.size() < 4 and not is_menu_open():
 		_text(Vector2(0, 352), "EXTRA CONTROLLERS: PRESS START TO JOIN", Color(0.6, 0.65, 0.8, 0.8), 8, HORIZONTAL_ALIGNMENT_RIGHT, 632)
 
 
@@ -258,6 +263,11 @@ func _focus_later(b: Button) -> void:
 		b.grab_focus()
 
 
+func _focus_control_later(c: Control) -> void:
+	if is_instance_valid(c) and c.is_inside_tree() and c.visible:
+		c.grab_focus()
+
+
 func _on_focus(desc: String) -> void:
 	_menu_desc.text = desc
 
@@ -287,3 +297,45 @@ func menu_button_count() -> int:
 ## Presses the menu row with this id (smoke test).
 func press(id: String) -> void:
 	_on_pick(id)
+
+
+## A one-line text box in the menu panel (the host's address for JOIN ONLINE GAME).
+## on_submit(text) runs on Enter or OK; BACK and Esc close it like any menu.
+func open_input(kind: String, title: String, text: String, desc: String, on_submit: Callable, on_back: Callable) -> void:
+	menu_kind = kind
+	_menu_cb = Callable()
+	_toast_t = 0.0
+	_menu_title.text = title
+	_menu_footer.text = ""
+	_menu.visible = true
+	_menu_entries = []
+	for c: Node in _menu_list.get_children():
+		_menu_list.remove_child(c)
+		c.queue_free()
+	var line: LineEdit = LineEdit.new()
+	line.name = "Input"
+	line.text = text
+	line.placeholder_text = "e.g. 100.64.12.34"
+	line.custom_minimum_size = Vector2(MENU_W - 20, 18)
+	line.text_submitted.connect(func(t: String) -> void: on_submit.call(t))
+	_menu_list.add_child(line)
+	var ok: Button = Button.new()
+	ok.text = "CONNECT"
+	ok.pressed.connect(func() -> void: on_submit.call(line.text))
+	_menu_list.add_child(ok)
+	var back: Button = Button.new()
+	back.text = "BACK"
+	back.pressed.connect(func() -> void: on_back.call())
+	_menu_list.add_child(back)
+	_menu_desc.text = desc
+	_menu.reset_size()
+	_menu.position = (Vector2(640, 360) - _menu.get_combined_minimum_size()) * 0.5
+	_focus_control_later.call_deferred(line)
+	line.caret_column = text.length()
+	Sfx.play("ui", -10.0)
+
+
+## The text box's text, or "" when no text box is open.
+func input_text() -> String:
+	var line: LineEdit = _menu_list.get_node_or_null("Input") as LineEdit
+	return line.text if line != null else ""

@@ -7,6 +7,7 @@ extends StaticBody3D
 var level: LevelMap
 var kind: String = "crate"
 var cell: Vector2i = Vector2i.ZERO
+var net_id: int = 0
 var hp: float = Balance.CRATE_HP
 var _model: Node3D
 var _parts: Array[MeshInstance3D] = []
@@ -52,10 +53,8 @@ func take_damage(amount: float) -> void:
 	if hp <= 0.0:
 		return
 	hp -= amount
-	_flash = 0.08
-	_wobble = 1.0
-	for part: MeshInstance3D in _parts:
-		part.material_override = Art.mat(Color(1, 1, 1), 1.0)
+	flash_hit()
+	Net.ev("prop_hit", [net_id])
 	Sfx.play("clang" if kind == "cache" else "crate", -10.0)
 	if hp <= 0.0:
 		_break()
@@ -77,3 +76,11 @@ func _process(delta: float) -> void:
 	if _wobble > 0.0:
 		_wobble = maxf(_wobble - delta * 5.0, 0.0)
 		_model.rotation.z = sin(_wobble * 25.0) * 0.08 * _wobble
+
+
+## The white flash and wobble of a hit (online clients play it when the host says so).
+func flash_hit() -> void:
+	_flash = 0.08
+	_wobble = 1.0
+	for part: MeshInstance3D in _parts:
+		part.material_override = Art.mat(Color(1, 1, 1), 1.0)

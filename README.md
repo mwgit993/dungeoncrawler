@@ -31,7 +31,23 @@ energy, which recharges when you stop firing. F11 toggles fullscreen.
 **Co-op:** player 1 uses the keyboard/mouse or the first controller. Players 2-4 press START on
 another controller to drop in at any time, and enemy HP and damage scale with the number of bots.
 A downed bot reboots next to a teammate after a few seconds, and if everyone is down the mission
-fails. Online play isn't in yet.
+fails.
+
+**Online co-op** (join by IP, drop in and out any time, up to 4 bots):
+- **Host:** press Esc and pick **HOST ONLINE GAME**. The pause menu then shows your IP addresses.
+- **Join:** on your own Ark, press Esc, pick **JOIN ONLINE GAME** and type the host's address.
+  You can join in the middle of a mission and leave whenever you like from the pause menu.
+- **Connecting:** on the same Wi-Fi, use the host's local address (192.168.x.x). In different
+  houses, the easiest way is [Tailscale](https://tailscale.com) (free): install it on both
+  computers, sign in, and join with the host's Tailscale address (100.x.x.x). Forwarding UDP port
+  24565 on the host's router to the host's computer also works.
+- **Progress:** the host's save is the team's, as in local co-op: the host runs the Ark's stations
+  and picks the mission, and a guest's own save is untouched and comes back when they leave.
+- Pausing doesn't stop the game for everyone else.
+
+**Mac:** the GitHub release has `DungeonCrawler-macOS.zip`. Unzip it, right-click
+**Dungeon Crawler.app** and choose **Open**. The first time, macOS may say it can't check the app:
+open **System Settings > Privacy & Security** and click **Open Anyway**.
 
 ## The loop
 

@@ -20,6 +20,25 @@ var _t: float = 0.0
 var _ttl: float = 0.5
 
 
+## Plays an effect the host sent (online co-op), in this machine's current level.
+static func replay(parent: Node3D, kind: String, a: Array) -> void:
+	match kind:
+		"sparks":
+			sparks(parent, a[0], a[1], int(a[2]), float(a[3]))
+		"debris":
+			debris(parent, a[0], a[1], int(a[2]))
+		"explosion":
+			explosion(parent, a[0], a[1], float(a[2]))
+		"shockwave":
+			shockwave(parent, a[0], a[1], float(a[2]))
+		"number":
+			number(parent, a[0], String(a[1]), a[2])
+		"afterimage":
+			afterimage(parent, a[0], a[1])
+		"zap":
+			zap(parent, a[0], a[1])
+
+
 static func _make(parent: Node3D, pos: Vector3, ttl: float) -> Fx:
 	var fx: Fx = Fx.new()
 	fx.position = pos
@@ -37,6 +56,7 @@ func _add(mesh: Mesh, mat: Material, vel: Vector3, life: float, offset: Vector3 
 
 
 static func sparks(parent: Node3D, pos: Vector3, color: Color, count: int, speed: float) -> void:
+	Net.ev("fx", ["sparks", [pos, color, count, speed]])
 	var fx: Fx = _make(parent, pos, 0.35)
 	fx._grav = 9.0
 	var m: StandardMaterial3D = Art.mat(color, 2.5)
@@ -46,6 +66,7 @@ static func sparks(parent: Node3D, pos: Vector3, color: Color, count: int, speed
 
 
 static func debris(parent: Node3D, pos: Vector3, color: Color, count: int) -> void:
+	Net.ev("fx", ["debris", [pos, color, count]])
 	var fx: Fx = _make(parent, pos, 0.9)
 	fx._grav = 16.0
 	var m: StandardMaterial3D = Art.mat(color)
@@ -57,6 +78,7 @@ static func debris(parent: Node3D, pos: Vector3, color: Color, count: int) -> vo
 
 
 static func explosion(parent: Node3D, pos: Vector3, color: Color, size: float) -> void:
+	Net.ev("fx", ["explosion", [pos, color, size]])
 	var fx: Fx = _make(parent, pos, 0.6)
 	fx._ring_mat = Art.alpha_mat(Color(1.0, 0.85, 0.5, 0.85), true)
 	fx._ring = Art.part(fx, Art.ball(0.5, 8), fx._ring_mat, Vector3.ZERO)
@@ -70,6 +92,7 @@ static func explosion(parent: Node3D, pos: Vector3, color: Color, size: float) -
 
 
 static func shockwave(parent: Node3D, pos: Vector3, color: Color, radius: float) -> void:
+	Net.ev("fx", ["shockwave", [pos, color, radius]])
 	var fx: Fx = _make(parent, pos + Vector3(0.0, 0.1, 0.0), 0.35)
 	var torus: TorusMesh = TorusMesh.new()
 	torus.inner_radius = 0.85
@@ -89,6 +112,7 @@ static func shockwave(parent: Node3D, pos: Vector3, color: Color, radius: float)
 
 
 static func number(parent: Node3D, pos: Vector3, text: String, color: Color) -> void:
+	Net.ev("fx", ["number", [pos, text, color]])
 	var fx: Fx = _make(parent, pos + Vector3(randf_range(-0.3, 0.3), 0.0, randf_range(-0.3, 0.3)), 0.7)
 	var l: Label3D = Label3D.new()
 	l.text = text
@@ -107,6 +131,7 @@ static func number(parent: Node3D, pos: Vector3, text: String, color: Color) -> 
 
 
 static func afterimage(parent: Node3D, pos: Vector3, color: Color) -> void:
+	Net.ev("fx", ["afterimage", [pos, color]])
 	var fx: Fx = _make(parent, pos, 0.25)
 	fx._ring_mat = Art.alpha_mat(Color(color.r, color.g, color.b, 0.5), true)
 	fx._ring = Art.part(fx, Art.cylinder(0.6, 0.6, 1.8, 8), fx._ring_mat, Vector3(0.0, 0.9, 0.0))
@@ -114,6 +139,7 @@ static func afterimage(parent: Node3D, pos: Vector3, color: Color) -> void:
 
 
 static func zap(parent: Node3D, a: Vector3, b: Vector3) -> void:
+	Net.ev("fx", ["zap", [a, b]])
 	var fx: Fx = _make(parent, a, 0.18)
 	var m: StandardMaterial3D = Art.mat(Color(0.5, 0.9, 1.0), 3.0)
 	var steps: int = maxi(int(a.distance_to(b) / 0.4), 2)

@@ -12,6 +12,8 @@ var damage: float = 10.0
 var friendly: bool = true
 var arcs: bool = false
 var source: Node3D = null
+var net_id: int = 0
+var puppet: bool = false   # online client: only flies; the host decides what it hits
 var _left: float = 15.0
 var _hit_r: float = 0.3
 var _trail: MeshInstance3D
@@ -47,6 +49,11 @@ func step(dt: float) -> void:
 	for i: int in range(steps):
 		position += inc
 		_left -= inc.length()
+		if puppet:
+			if level.blocks_shot(position) or _left <= 0.0:
+				queue_free()
+				return
+			continue
 		if level.blocks_shot(position) or _left <= 0.0:
 			_pop(false)
 			return
@@ -102,4 +109,5 @@ func _check_players() -> bool:
 func _pop(hit: bool) -> void:
 	var c: Color = Color(1.0, 0.8, 0.4) if friendly else Color(1.0, 0.35, 0.4)
 	Fx.sparks(level.fx_root, position, c, 6 if hit else 4, 3.5)
+	Net.ev("bolt_x", [net_id])
 	queue_free()

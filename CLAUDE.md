@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Dungeon Crawler (working title) is a Godot 4.7 (GDScript) isometric action RPG. The player is a gorilla robot with an arm smash and a mouth cannon. Players start on a hub ship, deploy to a map, kill the boss, extract, and spend scrap on upgrades. Co-op is drop-in local for up to 4 players; online is planned. Everything is generated in code: tile textures, sculpted character models, effects and sounds. The only file assets are the font (`assets/fonts/`, OFL) and `icon.svg`. Controls and the loop are in `README.md`.
+Dungeon Crawler (working title) is a Godot 4.7 (GDScript) isometric action RPG. The player is a gorilla robot with an arm smash and a mouth cannon. Players start on a hub ship, deploy to a map, kill the boss, extract, and spend scrap on upgrades. Co-op is drop-in local for up to 4 players, plus online drop-in/drop-out co-op by IP (**Online co-op** below). Everything is generated in code: tile textures, sculpted character models, effects and sounds. The only file assets are the font (`assets/fonts/`, OFL) and `icon.svg`. Controls and the loop are in `README.md`.
 
 ## Commands
 
@@ -16,7 +16,7 @@ godot --path .                                              # play
 
 - There's no unit-test framework. The smoke test, `_run_smoke_test()` at the bottom of `scripts/main.gd`, is the only automated check. It runs synchronously, because `--quit-after 30` counts frames, not seconds. It drives everything with direct calls: `hud.press(id)` presses menu rows, `_update_hub()` and `_update_mission(dt)` advance the game, and `LevelMap.simulate(seconds)` steps every entity at a fixed 1/60 s. The player bot is set `scripted`, so it reads its input from `sim`, e.g. `{"aim": Vector3, "melee": true}`. A failed `_check` pushes an error and exits 1 without printing PASSED. If you rename a method it calls, update it there. If you add an enemy, station, shop item or mod, add a check.
 - The smoke test calls `Game.use_smoke_save()` first, so it writes `user://dungeon_smoke_test_save.json` and never touches the real save.
-- CI (`.github/workflows/build.yml`) runs the smoke test on PRs and on pushes to `main`. A push to `main` also exports `DungeonCrawler-Windows.zip` (pck plus the editor exe, as in Matt's other repos) and republishes the `latest` release. CI doesn't auto-merge PRs.
+- CI (`.github/workflows/build.yml`) runs the smoke test on PRs and on pushes to `main`, on Windows. It auto-merges PRs from `jay-zimphy`, `justgetjay` and `mwgit993` once it passes (draft PRs are skipped), then exports `DungeonCrawler-Windows.zip` (pck plus the editor exe, as in Matt's other repos) and republishes the `latest` release. A second job, `build-macos`, runs after it: the smoke test on macOS, then `DungeonCrawler-macOS.zip`, which is the official Godot.app with the game's pck at `Contents/Resources/Godot.pck` (the binary runs a pck there on launch), renamed, re-signed ad hoc and checked by running its smoke test, added to the same release. So smoke-test locally before opening a PR.
 
 ## Code conventions
 
@@ -28,7 +28,7 @@ godot --path .                                              # play
 
 ## Architecture
 
-**Autoloads:** `Game` (progress, save/load, upgrade-adjusted stats such as `max_hp()`, `melee_mult()` and `mission_tier()`), `Art` (tile textures painted per tileset, cached materials and primitive meshes for props, the floor, wall and character shaders, the UI theme), `Sfx` (synthesized `AudioStreamWAV`s; `Sfx.play(name)` with an unknown name is silent).
+**Autoloads:** `Game` (progress, save/load, upgrade-adjusted stats such as `max_hp()`, `melee_mult()` and `mission_tier()`), `Art` (tile textures painted per tileset, cached materials and primitive meshes for props, the floor, wall and character shaders, the UI theme), `Sfx` (synthesized `AudioStreamWAV`s; `Sfx.play(name)` with an unknown name is silent), `Net` (online co-op, below).
 
 **`main.gd` (`Main`)** owns the `World` node, which holds the current `LevelMap`, a `Players` node and the `CameraRig`. It also owns the `Hud`. `mode` is `hub`, `mission` or `results`. `go_hub()` and `start_mission(id)` rebuild the level. Players persist across levels and are moved with `move_level`. Normal play wraps level changes in `_transition` (fade); the smoke test does them instantly. Pausing sets `world.process_mode = DISABLED`, and the HUD runs with `PROCESS_MODE_ALWAYS`. Station menus fill their rows from `Balance` (`_shop_entries`, `_aug_entries`, `_lab_entries`, `_mission_entries`), and purchases go through `_buy` and `_after_purchase`.
 
@@ -59,6 +59,18 @@ The wall shader dithers away wall pixels that sit between the camera and a playe
 Physics layers: 1 world, 2 players, 4 enemies. Actors only collide with the world, and push each other apart with `_separation()`.
 
 **Difficulty:** an enemy's HP and damage are `Balance.hp_mult(tier, players)` and `damage_mult(tier, players)`. A mission's tier is its base `MISSION_TIER` plus one per clear. When a player joins mid-mission, `LevelMap.set_player_count` rescales living enemies.
+
+## Online co-op
+
+Matt's request: Minecraft Dungeons-style drop-in / drop-out, join by IP (UDP port `Net.PORT` 24565; Tailscale or a port forward across the internet). `scripts/autoload/net.gd` is the connection and the RPCs; `main.gd`'s "Online co-op" section and each entity's `net_*` methods do the rest.
+
+- **The host runs the real game**, unchanged. A client's bot on the host is a `GorillaBot` with `net_mode = "remote"`: it stands where its client says (`net_state`, sent every frame by `Net._c_input`) and fights with the client's buttons through the host's own `_melee` / `_fire_cannon` / `use_kit`. Kit and interact presses travel as counters, so a dropped packet can't lose a tap.
+- **A client draws the host's world.** Its level is built from the same map with `LevelMap.puppet = true`: nothing in it thinks. Robots, pickups and crates follow the snapshots (`main.net_snapshot`, `LevelMap.net_entities`, about 20 a second, unreliable) and are smoothed toward them; robots are numbered in map order (`net_id`), so the ids match without being sent. Other players' bots are `"puppet"`; the client's own bot is `"local"` and moves itself (walking and dashing feel instant), unless the host moves it (`tp_seq` bumps in `move_level` and `revive`).
+- **Events** go out every frame (reliable): every `Fx` effect and `Sfx` sound the host plays (both relay themselves, except UI sounds), toasts, camera shake, animation cues (`GorillaBot._rig`, `"erig"` from `RobotEnemy`), bolts (`"bolt"` / `"bolt_x"`: a client flies its own copy), crate hits and results. `Net.skip_slot` keeps one client's own dash from echoing back to it; `Net.ev_to` reaches one client (knockback via `GorillaBot.push_back`, "host only" toasts). Each level gets a sequence number (`Net.lseq`) so stale snapshots and effects are dropped.
+- **Progress works like local co-op**: the host's save is the team's. A client mirrors it (`Game.apply_team`, sent on joining, with every level and after purchases via `Net.team_changed`), `Game.save_game` does nothing while `Net.is_client()`, and `Game.restore_own` reloads the client's own save when it leaves (it saves just before joining). Only the host can use the Ark's stations; a client gets a toast.
+- Online, pausing doesn't freeze the world and the host's mission logic keeps running with a menu open. `_set_players_input` never touches remote bots.
+- **When adding things**: effects through `Fx` and sounds through `Sfx` reach clients for free. A new rig cue on a player goes through `_rig()`; on a robot, add a `Net.ev("erig", ...)` next to it. A new robot state shows up through `net_entry` / `net_apply` (add a telegraph there if its wind-up has one). Anything that moves a player by force must bump `tp_seq` or push through `push_back`. A new kind of entity needs a snapshot entry and a puppet mode. A new purchase must call `Net.team_changed()` (`_after_purchase` does).
+- The smoke test's `_smoke_net` covers it without sockets: the snapshot survives `var_to_bytes`, a pretend client's bot drops in, moves, smashes, fires, heals and dodges on the host, a puppet level built from the snapshot matches the host's robots, crates and pickups, every captured event replays, leaving scales robots back, a local bot walks and counts presses, a client never writes its save, and hosting opens the port. Two real processes on localhost were used to test joining in the hub and mid-mission, results, leaving and the host quitting.
 
 ## Content touchpoints
 

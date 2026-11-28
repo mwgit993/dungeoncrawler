@@ -29,6 +29,7 @@ var _smoke_fail: Array[String] = []
 
 
 func _ready() -> void:
+	Net.main = self
 	_smoke = "--smoke-test" in OS.get_cmdline_user_args()
 	if _smoke:
 		Game.use_smoke_save()
@@ -56,7 +57,7 @@ func _ready() -> void:
 
 func add_player(uses_kbm: bool, pad_id: int) -> GorillaBot:
 	var p: GorillaBot = GorillaBot.new()
-	p.setup(level, players.size(), uses_kbm, pad_id)
+	p.setup(level, _free_slot(), uses_kbm, pad_id)
 	players_root.add_child(p)
 	players.append(p)
 	p.died.connect(_on_player_died)
@@ -69,9 +70,24 @@ func add_player(uses_kbm: bool, pad_id: int) -> GorillaBot:
 				break
 		p.move_level(level, _free_spot_near(anchor, players.size() - 1))
 		level.set_player_count(players.size())
-		hud.toast("PLAYER %d JOINED" % players.size(), "Enemies scale up for %d bots" % players.size(), p.color, 2.5)
+		hud.toast("PLAYER %d JOINED" % (p.slot + 1), "Enemies scale up for %d bots" % players.size(), p.color, 2.5)
 		Sfx.play("unlock", -8.0)
 	return p
+
+
+## The lowest P1-P4 slot no bot is using (online players can leave from the middle).
+func _free_slot() -> int:
+	for s: int in range(4):
+		if _player_by_slot(s) == null:
+			return s
+	return players.size()
+
+
+func _player_by_slot(s: int) -> GorillaBot:
+	for p: GorillaBot in players:
+		if p.slot == s:
+			return p
+	return null
 
 
 func _free_spot_near(anchor: Vector3, index: int) -> Vector3:
@@ -92,6 +108,8 @@ func _pad_taken(pad_id: int) -> bool:
 
 
 func _poll_joins() -> void:
+	if Net.is_client():
+		return
 	for id: int in Input.get_connected_joypads():
 		var now: bool = Input.is_joy_button_pressed(id, JOY_BUTTON_START)
 		var was: bool = bool(_pad_start_prev.get(id, false))
@@ -102,7 +120,8 @@ func _poll_joins() -> void:
 
 func _set_players_input(on: bool) -> void:
 	for p: GorillaBot in players:
-		p.input_enabled = on
+		if p.net_mode != "remote": # a client's bot follows that client, not our menus
+			p.input_enabled = on
 
 
 func _on_player_died(p: GorillaBot) -> void:
@@ -132,6 +151,7 @@ func _load_level(def: Dictionary, tier: int) -> void:
 	camera.targets = players
 	camera.snap_to(level.start_pos)
 	hud.set_prompt("")
+	Net.level_changed()
 
 
 ## Fades out, runs `change`, fades back in. Instant in the smoke test.
@@ -218,10 +238,18 @@ func objective_text() -> String:
 
 func _process(delta: float) -> void:
 	_poll_joins()
-	if level == null or paused or _busy:
+	if Net.is_client():
+		_update_client()
+		return
+	if level == null or _busy:
+		return
+	# Online, the game keeps going for everyone while the host has a menu open.
+	if paused and not Net.online():
 		return
 	if hud.is_menu_open():
 		hud.set_prompt("")
+		if mode == "mission" and Net.online():
+			_update_mission(minf(delta, 0.1))
 		return
 	for p: GorillaBot in players:
 		if p.pause_pressed:
@@ -235,10 +263,16 @@ func _process(delta: float) -> void:
 
 
 func _update_hub() -> void:
+	# Online players can't open the Ark's stations: the host's save runs them.
+	for rp: GorillaBot in players:
+		if rp.net_mode == "remote" and rp.interact_pressed:
+			Net.ev_to(rp.slot, "toast", ["HOST ONLY", "The host runs the Ark's stations and picks the mission", Color(1.0, 0.7, 0.4), 2.5])
 	var best: Station = null
 	var who: GorillaBot = null
 	var best_d: float = Station.INTERACT_RANGE
 	for p: GorillaBot in players:
+		if p.net_mode == "remote":
+			continue
 		for st: Station in level.stations:
 			var d: float = p.global_position.distance_to(st.global_position)
 			if d < best_d:
@@ -251,7 +285,7 @@ func _update_hub() -> void:
 	var key: String = "Y" if who.using_pad else "E"
 	hud.set_prompt("%s  %s" % [key, best.title()] if best.unlocked else "%s  %s (LOCKED)" % [key, best.title()])
 	for p2: GorillaBot in players:
-		if p2.interact_pressed and p2.global_position.distance_to(best.global_position) < Station.INTERACT_RANGE + 0.5:
+		if p2.net_mode != "remote" and p2.interact_pressed and p2.global_position.distance_to(best.global_position) < Station.INTERACT_RANGE + 0.5:
 			use_station(best)
 			return
 
@@ -302,6 +336,7 @@ func mission_complete() -> void:
 		mission_scrap, mission_kills, mins, secs, Game.mission_tier(mission_id)]
 	var entries: Array[Dictionary] = [{"id": "ok", "label": "RETURN TO THE ARK", "desc": desc}]
 	hud.open_menu("results", "MISSION COMPLETE", entries, _on_results_pick)
+	Net.ev("results", ["MISSION COMPLETE", desc])
 
 
 func mission_failed(abandoned: bool) -> void:
@@ -314,6 +349,7 @@ func mission_failed(abandoned: bool) -> void:
 	var desc: String = "Salvage recovered: %d of %d scrap.\nROBOTS %d" % [kept, mission_scrap, mission_kills]
 	var entries: Array[Dictionary] = [{"id": "ok", "label": "RETURN TO THE ARK", "desc": desc}]
 	hud.open_menu("results", "MISSION ABANDONED" if abandoned else "BOTS DESTROYED", entries, _on_results_pick)
+	Net.ev("results", ["MISSION ABANDONED" if abandoned else "BOTS DESTROYED", desc])
 
 
 func _on_results_pick(_id: String) -> void:
@@ -463,6 +499,7 @@ func _buy(cost: int) -> bool:
 
 func _after_purchase(entries: Array[Dictionary]) -> void:
 	Game.save_game()
+	Net.team_changed()
 	for p: GorillaBot in players:
 		if level != null and level.is_hub:
 			p.reset_stats()
@@ -519,10 +556,12 @@ func _entry(table: Array[Dictionary], id: String) -> Dictionary:
 
 
 func open_pause() -> void:
-	if mode == "results" or hud.is_menu_open() or _busy:
+	if hud.is_menu_open() or _busy or (mode == "results" and not Net.is_client()):
 		return
 	paused = true
-	world.process_mode = Node.PROCESS_MODE_DISABLED
+	# Online, pausing only opens the menu: the game goes on for everyone else.
+	if not Net.online():
+		world.process_mode = Node.PROCESS_MODE_DISABLED
 	_set_players_input(false)
 	hud.open_menu("pause", "PAUSED", _pause_entries(), _on_pause_pick)
 
@@ -531,7 +570,8 @@ func _pause_entries() -> Array[Dictionary]:
 	var out: Array[Dictionary] = [{"id": "resume", "label": "RESUME", "desc": "Back to it."}]
 	out.append({"id": "fullscreen", "label": "FULLSCREEN", "right": "ON" if Game.fullscreen else "OFF", "desc": "F11 also toggles it."})
 	out.append({"id": "sfx", "label": "SOUND", "right": "%d%%" % int(round(Game.sfx_volume * 100.0)), "desc": "Sound effect volume."})
-	if mode == "mission":
+	out.append_array(_online_entries())
+	if mode == "mission" and not Net.is_client():
 		out.append({"id": "abandon", "label": "ABANDON MISSION",
 			"desc": "Return to the Ark, keeping %d%% of this run's scrap." % int(Balance.FAIL_SCRAP_KEPT * 100.0)})
 	out.append({"id": "quit", "label": "QUIT GAME", "desc": "Progress is saved."})
@@ -555,9 +595,297 @@ func _on_pause_pick(id: String) -> void:
 			paused = false
 			world.process_mode = Node.PROCESS_MODE_INHERIT
 			mission_failed(true)
+		"host", "join", "stop_host", "leave", "hosting":
+			_on_online_pick(id)
 		"quit":
 			Game.save_game()
 			get_tree().quit()
+
+
+# --- Online co-op (see Net) -------------------------------------------------------------
+
+func _online_entries() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	var port_note: String = "UDP port %d" % Net.PORT
+	if Net.is_client():
+		out.append({"id": "leave", "label": "LEAVE ONLINE GAME", "desc": "Back to your own Ark and save. You can drop back in any time."})
+	elif Net.is_host():
+		var ips: String = ", ".join(Net.local_ips())
+		out.append({"id": "hosting", "label": "HOSTING ONLINE", "right": "%d JOINED" % Net.client_count(),
+			"desc": "Friends pick JOIN ONLINE GAME and type one of your addresses: %s (%s)." % [ips, port_note]})
+		out.append({"id": "stop_host", "label": "STOP HOSTING", "desc": "Sends everyone who joined back to their own Ark."})
+	else:
+		out.append({"id": "host", "label": "HOST ONLINE GAME",
+			"desc": "Friends can drop in and out of your game over Wi-Fi or the internet (%s)." % port_note})
+		if mode == "hub":
+			out.append({"id": "join", "label": "JOIN ONLINE GAME", "desc": "Drop into a friend's game. You'll need their IP address."})
+	return out
+
+
+func _on_online_pick(id: String) -> void:
+	match id:
+		"host":
+			if Net.host_game():
+				close_menus()
+				var ips: PackedStringArray = Net.local_ips()
+				hud.toast("HOSTING ONLINE", "Your address: %s" % (ips[0] if not ips.is_empty() else "?"), Color(0.5, 1.0, 0.7), 5.0)
+			else:
+				hud.refresh_menu(_pause_entries())
+				hud.toast("CAN'T HOST", Net.last_error, Color(1.0, 0.45, 0.4), 3.0)
+		"join":
+			hud.open_input("join", "JOIN ONLINE GAME", Game.last_ip,
+				"The host's IP address (their pause menu shows it). Same Wi-Fi, a forwarded UDP port %d, or Tailscale." % Net.PORT,
+				_join_typed, _back_to_pause)
+		"stop_host", "leave":
+			close_menus()
+			Net.leave()
+
+
+func _back_to_pause() -> void:
+	hud.close_menu()
+	hud.open_menu("pause", "PAUSED", _pause_entries(), _on_pause_pick)
+
+
+func _join_typed(ip: String) -> void:
+	ip = ip.strip_edges()
+	if ip == "":
+		Sfx.play("cant", -6.0)
+		return
+	Game.last_ip = ip
+	Game.save_game() # our own progress is safe on disk before the host's replaces it on screen
+	close_menus()
+	if Net.join_game(ip):
+		hud.toast("CONNECTING", ip, Color(0.6, 0.85, 1.0), 6.0)
+	else:
+		hud.toast("CAN'T JOIN", Net.last_error, Color(1.0, 0.45, 0.4), 3.0)
+
+
+## Client frame: our own bot moves itself; this just handles prompts and pausing.
+func _update_client() -> void:
+	if level == null:
+		return
+	if hud.is_menu_open():
+		hud.set_prompt("")
+		return
+	var me: GorillaBot = _player_by_slot(Net.my_slot)
+	if me == null:
+		return
+	if me.pause_pressed:
+		open_pause()
+		return
+	hud.set_prompt("")
+	if level.is_hub:
+		for st: Station in level.stations:
+			if me.global_position.distance_to(st.global_position) < Station.INTERACT_RANGE:
+				hud.set_prompt("%s  (HOST ONLY)" % st.title())
+				return
+
+
+# Host side.
+
+func net_add_remote(peer: int) -> int:
+	var p: GorillaBot = add_player(false, -1)
+	p.net_mode = "remote"
+	p.peer_id = peer
+	return p.slot
+
+
+func net_remove_remote(slot: int) -> void:
+	var p: GorillaBot = _player_by_slot(slot)
+	if p == null or p.net_mode != "remote":
+		return
+	players.erase(p)
+	p.queue_free()
+	camera.targets = players
+	if level != null:
+		level.set_player_count(players.size())
+	hud.toast("PLAYER %d LEFT" % (slot + 1), "Enemies scale back for %d bot%s" % [players.size(), "" if players.size() == 1 else "s"], p.color, 2.5)
+
+
+func net_remote_input(slot: int, state: Array) -> void:
+	var p: GorillaBot = _player_by_slot(slot)
+	if p != null and p.net_mode == "remote":
+		p.net_state = state
+
+
+func net_stop_hosting() -> void:
+	for p: GorillaBot in players.duplicate():
+		if p.net_mode == "remote":
+			net_remove_remote(p.slot)
+	hud.toast("STOPPED HOSTING", "Your game is offline again", Color(0.8, 0.85, 1.0), 2.5)
+
+
+func net_level_spec() -> Dictionary:
+	return {"map": level.id if level != null else "hub", "tier": level.tier if level != null else 1,
+		"players": players.size(), "mode": mode, "mission": mission_id, "team": Game.team_data()}
+
+
+func net_team() -> Dictionary:
+	return Game.team_data()
+
+
+func net_snapshot() -> Array:
+	var ps: Array = []
+	for p: GorillaBot in players:
+		ps.append(p.net_entry())
+	return [mode, Game.scrap, Game.kits, ps, level.net_entities() if level != null else [[], [], PackedInt32Array(), false]]
+
+
+# Client side.
+
+func net_local_input() -> Array:
+	var me: GorillaBot = _player_by_slot(Net.my_slot)
+	return me.net_input() if me != null else []
+
+
+func net_enter_client(spec: Dictionary, team: Dictionary) -> void:
+	hud.close_menu()
+	paused = false
+	_busy = false
+	world.process_mode = Node.PROCESS_MODE_INHERIT
+	for p: GorillaBot in players:
+		p.queue_free()
+	players.clear()
+	Game.apply_team(team)
+	net_load_level(spec)
+	hud.toast("JOINED ONLINE GAME", "You're P%d. Leave any time from the pause menu." % (Net.my_slot + 1), Color(0.5, 1.0, 0.7), 4.0)
+
+
+func net_load_level(spec: Dictionary) -> void:
+	# Clears since the last level (unlocked stations, threat tiers) come along with every level.
+	if spec.has("team"):
+		Game.apply_team(spec["team"])
+	mode = String(spec.get("mode", "hub"))
+	mission_id = String(spec.get("mission", ""))
+	var map_id: String = String(spec.get("map", "hub"))
+	var def: Dictionary = Maps.HUB if map_id == "hub" else Maps.mission(map_id)
+	if level != null:
+		world.remove_child(level)
+		level.queue_free()
+	level = LevelMap.new()
+	level.puppet = true
+	level.build(def, int(spec.get("tier", 1)), int(spec.get("players", 1)))
+	world.add_child(level)
+	level.players = players
+	for p: GorillaBot in players:
+		p.move_level(level, level.start_pos)
+		p.rig.revive()
+	_refresh_stations()
+	camera.targets = players
+	camera.snap_to(level.start_pos)
+	hud.set_prompt("")
+	if hud.menu_kind == "results":
+		hud.close_menu()
+		paused = false
+	if not _smoke:
+		hud.set_fade(1.0)
+		hud.fade_to(0.0, 0.35)
+
+
+func net_apply_snapshot(snap: Array, _first: bool) -> void:
+	if level == null:
+		return
+	mode = String(snap[0])
+	Game.scrap = int(snap[1])
+	Game.kits = int(snap[2])
+	var seen: Dictionary = {}
+	for pv: Variant in snap[3]:
+		var pe: Array = pv
+		var slot: int = int(pe[0])
+		seen[slot] = true
+		var p: GorillaBot = _player_by_slot(slot)
+		if p == null:
+			p = _add_net_player(slot, pe[1])
+		p.net_apply(pe)
+	for p2: GorillaBot in players.duplicate():
+		if not seen.has(p2.slot):
+			players.erase(p2)
+			p2.queue_free()
+	camera.targets = players
+	level.net_apply_entities(snap[4])
+
+
+func _add_net_player(slot: int, pos: Vector3) -> GorillaBot:
+	var mine: bool = slot == Net.my_slot
+	var p: GorillaBot = GorillaBot.new()
+	p.setup(level, slot, mine, 0 if mine else -1)
+	p.net_mode = "local" if mine else "puppet"
+	players_root.add_child(p)
+	players.append(p)
+	p.move_level(level, pos)
+	camera.targets = players
+	if mine:
+		camera.snap_to(pos)
+	return p
+
+
+func net_apply_event(kind: String, a: Array) -> void:
+	match kind:
+		"toast":
+			hud.toast(String(a[0]), String(a[1]), a[2], float(a[3]))
+		"results":
+			_set_players_input(false)
+			var entries: Array[Dictionary] = [{"id": "ok", "label": "OK",
+				"desc": String(a[1]) + "\nThe host takes everyone back to the Ark."}]
+			hud.open_menu("results", String(a[0]), entries, _on_client_results_pick)
+		"team":
+			net_apply_team(a[0])
+	if level == null:
+		return
+	match kind:
+		"fx":
+			Fx.replay(level.fx_root, String(a[0]), a[1])
+		"sfx":
+			Sfx.play(String(a[0]), float(a[1]), float(a[2]))
+		"shake":
+			camera.add_shake(float(a[0]))
+		"prig":
+			var p: GorillaBot = _player_by_slot(int(a[0]))
+			if p != null:
+				p.rig.callv(String(a[1]), a[2])
+		"erig":
+			var e: RobotEnemy = level._enemy_by_id(int(a[0]))
+			if e != null and is_instance_valid(e):
+				e.rig.callv(String(a[1]), a[2])
+		"bolt":
+			level.net_spawn_bolt(a)
+		"bolt_x":
+			level.net_end_bolt(int(a[0]))
+		"prop_hit":
+			level.net_prop_hit(int(a[0]))
+		"push":
+			var me: GorillaBot = _player_by_slot(Net.my_slot)
+			if me != null:
+				me.velocity += a[0] as Vector3
+
+
+func _on_client_results_pick(_id: String) -> void:
+	hud.close_menu()
+	_set_players_input(true)
+
+
+func net_apply_team(team: Dictionary) -> void:
+	Game.apply_team(team)
+	if level != null:
+		_refresh_stations()
+
+
+## Back to this machine's own game: left, kicked, the host quit, or we never got in.
+func net_back_offline(reason: String) -> void:
+	hud.close_menu()
+	paused = false
+	world.process_mode = Node.PROCESS_MODE_INHERIT
+	for p: GorillaBot in players:
+		p.queue_free()
+	players.clear()
+	if level != null:
+		world.remove_child(level)
+		level.queue_free()
+		level = null
+	Game.restore_own()
+	add_player(true, 0)
+	go_hub(true)
+	hud.toast("OFFLINE", reason, Color(1.0, 0.65, 0.45), 4.5)
 
 
 # --- Smoke test -------------------------------------------------------------------------
@@ -589,6 +917,7 @@ func _run_smoke_test() -> void:
 	_smoke_ashfall(p1)
 	_smoke_mods(p1)
 	_smoke_coop(p1)
+	_smoke_net(p1)
 	_smoke_save_and_pause()
 	# A couple of real frames so every draw/process path runs once.
 	for i: int in range(3):
@@ -952,6 +1281,142 @@ func _smoke_coop(p1: GorillaBot) -> void:
 	level.set_player_count(1)
 	camera.targets = players
 	_check(mode == "hub" and p1.alive, "back on the Ark after a wipe")
+
+
+## Online co-op, without sockets: the snapshot survives the wire format, a client's bot drops in,
+## goes where its client says and fights with its buttons, a client's copy of the level follows
+## the host's snapshot, every event the host sends replays, leaving scales the robots back, a
+## client's own bot walks by itself, a client never writes its save, and hosting opens a port.
+func _smoke_net(p1: GorillaBot) -> void:
+	start_mission("foundry")
+	level.simulate(0.2)
+	var snap: Array = net_snapshot()
+	var back: Variant = bytes_to_var(var_to_bytes(snap))
+	_check(back is Array and str(back) == str(snap), "net: the snapshot survives the wire format")
+	_check(net_level_spec().has("team"), "net: every level brings the team's progress (unlocks, threat)")
+	var e: RobotEnemy = level.enemies[0]
+	var hp1: float = e.max_hp
+	# Capture what a host would send, with a pretend client in slot 1.
+	Net.role = "host"
+	Net.peer_slots = {77: 1}
+	var slot: int = net_add_remote(77)
+	var rb: GorillaBot = _player_by_slot(slot)
+	_check(slot == 1 and rb != null and rb.net_mode == "remote" and level.player_count == 2, "net: a client's bot drops in")
+	_check(e.max_hp > hp1, "net: robots scale up when a client joins")
+	var spot: Vector3 = _free_spot_near(p1.global_position, 2)
+	var foe: RobotEnemy = level.spawn_enemy("gunner", _free_spot_near(spot, 1), false)
+	var to: Vector3 = foe.global_position - spot
+	to.y = 0.0
+	net_remote_input(slot, [spot, Vector3.ZERO, to.normalized(), false, true, false, 0, 0])
+	var fhp: float = foe.hp
+	level.simulate(0.4)
+	_check(rb.global_position.distance_to(spot) < 0.05, "net: a client's bot stands where the client says")
+	_check(foe.hp < fhp, "net: a client's smash button hits robots on the host")
+	Game.kits = 2
+	rb.hp = rb.max_hp * 0.5
+	net_remote_input(slot, [spot, Vector3.ZERO, to.normalized(), false, false, true, 1, 0])
+	level.simulate(0.1)
+	_check(Game.kits == 1 and rb.hp > rb.max_hp * 0.5, "net: a client's kit press heals its bot")
+	_check(level.counters.get("player_bolts", 0) > 0, "net: a client's cannon button fires")
+	net_remote_input(slot, [spot, Vector3.ZERO, to.normalized(), true, false, false, 1, 0])
+	level.simulate(1.0 / 60.0)
+	_check(rb.is_dashing() and not rb.take_damage(10.0, spot + Vector3(1, 0, 0)), "net: a client's dash dodges on the host")
+	net_remote_input(slot, [spot, Vector3.ZERO, to.normalized(), false, false, false, 1, 0])
+	level.simulate(0.2)
+	foe.take_damage(99999.0, Vector3.RIGHT, 0.0)
+	var kinds: Dictionary = {}
+	var captured: Array = Net._events.duplicate()
+	for ev: Variant in captured:
+		kinds[String((ev as Array)[0])] = true
+	for want: String in ["fx", "sfx", "prig", "erig", "bolt", "bolt_x", "toast", "shake"]:
+		_check(kinds.has(want), "net: the host sends '%s' events" % want)
+	var snap2: Array = net_snapshot()
+	Net._events.clear()
+	Net.role = "offline"
+	Net.peer_slots = {}
+	# A client's copy of the level, built from the same map, ends up matching the host's.
+	var mirror: LevelMap = LevelMap.new()
+	mirror.puppet = true
+	mirror.build(Maps.mission("foundry"), level.tier, players.size())
+	mirror.visible = false
+	world.add_child(mirror)
+	mirror.net_apply_entities(snap2[4])
+	_check(mirror.enemies.size() == level.enemies.size(), "net: the client's level has the host's robots (%d vs %d)" % [mirror.enemies.size(), level.enemies.size()])
+	_check(mirror.props.size() == level.props.size() and mirror.pickups.get_child_count() == level.pickups.get_child_count(), "net: ...and its crates and pickups")
+	var matched: bool = true
+	for he: RobotEnemy in level.enemies:
+		var me: RobotEnemy = mirror._enemy_by_id(he.net_id)
+		if me == null or me.kind != he.kind or not is_equal_approx(me.hp, he.hp):
+			matched = false
+			continue
+		for i: int in range(20):
+			me._puppet_step(0.05)
+		if me.global_position.distance_to(he.global_position) > 0.1:
+			matched = false
+	_check(matched, "net: every robot on the client has the host's id, kind, HP and position")
+	_check(mirror.boss != null and mirror._enemy_by_id(level.boss.net_id) == mirror.boss, "net: the client knows the boss")
+	# Every event replays on a client without errors.
+	var old_level: LevelMap = level
+	level = mirror
+	for ev2: Variant in captured:
+		var ea: Array = ev2
+		net_apply_event(String(ea[0]), ea[1] as Array)
+	net_apply_event("results", ["MISSION COMPLETE", "test"])
+	_check(hud.menu_kind == "results", "net: a client sees the results screen")
+	hud.close_menu()
+	_set_players_input(true)
+	level = old_level
+	world.remove_child(mirror)
+	mirror.queue_free()
+	# The client leaves: its bot goes and the robots scale back down.
+	net_remove_remote(slot)
+	_check(players.size() == 1 and level.player_count == 1 and is_equal_approx(e.max_hp, hp1), "net: a client leaving scales the robots back")
+	# A client's own bot walks the moment you steer it, and sends that to the host.
+	var lb: GorillaBot = GorillaBot.new()
+	lb.setup(level, 3, false, -1)
+	lb.net_mode = "local"
+	lb.scripted = true
+	players_root.add_child(lb)
+	lb.move_level(level, p1.global_position)
+	var start: Vector3 = lb.global_position
+	lb.sim = {"move": Vector2(1.0, 0.0), "melee": true, "kit": true}
+	for i2: int in range(30):
+		lb.step(1.0 / 60.0)
+	lb.sim = {}
+	lb.step(1.0 / 60.0)
+	lb.sim = {"kit": true}
+	lb.step(1.0 / 60.0)
+	var sent: Array = lb.net_input()
+	_check(lb.global_position.distance_to(start) > 0.3 and sent.size() == 8 and int(sent[6]) == 2, "net: a client's own bot walks by itself and counts its presses")
+	var ent: Array = lb.net_entry()
+	lb.net_apply(ent)
+	ent[1] = start
+	ent[11] = int(ent[11]) + 1
+	lb.net_apply(ent)
+	_check(lb.global_position.distance_to(start) < 0.01, "net: the host can still move a client's bot (reboot, new level)")
+	lb.queue_free()
+	# A client's save stays its own.
+	var before: String = FileAccess.get_file_as_string(Game.save_path)
+	var scrap0: int = Game.scrap
+	Net.role = "client"
+	Game.apply_team({"scrap": scrap0 + 999, "augments": {"plating": 3}})
+	Game.save_game()
+	Net.role = "offline"
+	_check(FileAccess.get_file_as_string(Game.save_path) == before, "net: a client never writes its save")
+	Game.restore_own()
+	_check(Game.scrap == scrap0, "net: leaving restores the client's own progress")
+	# The pause menu offers hosting and joining, and hosting really opens the port.
+	go_hub()
+	var ids: Array[String] = []
+	for row: Dictionary in _online_entries():
+		ids.append(String(row["id"]))
+	_check("host" in ids and "join" in ids, "net: the pause menu offers HOST and JOIN")
+	_on_online_pick("join")
+	_check(hud.menu_kind == "join" and hud.input_text() == Game.last_ip, "net: JOIN asks for the host's address")
+	close_menus()
+	_check(Net.host_game() and Net.is_host(), "net: hosting opens UDP port %d" % Net.PORT)
+	Net.leave()
+	_check(Net.role == "offline" and players.size() == 1, "net: stopping hosting")
 
 
 func _smoke_save_and_pause() -> void:
