@@ -3,6 +3,9 @@ extends RefCounted
 
 ## Every map is a grid of characters, one per tile (TILE metres square). Edit the rows to change a
 ## layout: all rows of a map must be the same length, and a map needs exactly one P.
+## Missions are laid out fresh every run by MapGen (scripts/map_gen.gd) from the mission's "gen"
+## settings and a seed (mission_def); the rows written here are the hand-made layout it falls back
+## to, and what seed 0 gives. The hub is always the rows below.
 ## The camera looks from the bottom-right corner of the grid, so on screen the grid appears turned
 ## 45 degrees clockwise: the top-left of the text is the top of the screen.
 ##
@@ -42,6 +45,7 @@ const MISSIONS: Array[Dictionary] = [
 	{
 		"id": "foundry", "name": "DERELICT FOUNDRY", "subtitle": "A dead factory moon, still building.",
 		"tileset": "foundry", "boss": "foreman",
+		"gen": {"size": Vector2i(46, 40), "enemies": 20, "mix": "sssssgggbb", "layouts": "ppmmmmkllo"},
 		"rows": [
 			"############################################",
 			"############################################",
@@ -84,6 +88,7 @@ const MISSIONS: Array[Dictionary] = [
 	{
 		"id": "ashfall", "name": "ASHFALL REACTOR", "subtitle": "Lava fields around a runaway core.",
 		"tileset": "ash", "boss": "warden",
+		"gen": {"size": Vector2i(46, 42), "enemies": 24, "mix": "ssssgggbbb", "layouts": "ppkkkkmllo", "river": true},
 		"rows": [
 			"############################################",
 			"###################...X...##################",
@@ -135,3 +140,16 @@ static func mission(id: String) -> Dictionary:
 		if String(m["id"]) == id:
 			return m
 	return {}
+
+
+## The mission with its map laid out for this seed (0: the hand-made rows). The seed is kept in the
+## result ("seed"), so the level and online clients know which map it is.
+static func mission_def(id: String, seed_value: int) -> Dictionary:
+	var m: Dictionary = mission(id)
+	if m.is_empty():
+		return m
+	var d: Dictionary = m.duplicate()
+	d["seed"] = seed_value
+	if seed_value != 0:
+		d["rows"] = MapGen.generate(m, seed_value)
+	return d

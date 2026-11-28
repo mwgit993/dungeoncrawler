@@ -7,7 +7,9 @@ scaled up with crisp pixels. Everything is generated in code, including tiles, m
 and sounds. The characters are smooth sculpted 3D models shaded like HD-2D pixel sprites, with
 toon light bands and 1-pixel outlines, so they can turn in any direction. The only file assets are the Press Start 2P font (SIL Open Font License) and the icon.
 
-This first build is a test bed for the gameplay loop: a hub ship and two maps.
+This first build is a test bed for the gameplay loop: a hub ship and two missions. Every time you
+deploy, the mission's map is laid out fresh: new rooms, corridors, hazards, loot and robot groups,
+with the boss room at the far end.
 
 ## Play
 

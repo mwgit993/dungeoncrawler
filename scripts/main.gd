@@ -20,6 +20,7 @@ var mission_id: String = ""
 var mission_scrap: int = 0
 var mission_kills: int = 0
 var mission_time: float = 0.0
+var forced_seed: int = 0     # nonzero: every mission uses this map seed (the smoke test sets it)
 var paused: bool = false
 var _fail_t: float = -1.0
 var _busy: bool = false
@@ -203,7 +204,9 @@ func start_mission(id: String) -> void:
 	if not Game.mission_unlocked(id):
 		Sfx.play("cant", -6.0)
 		return
-	var def: Dictionary = Maps.mission(id)
+	# A new layout every run (the smoke test pins the seed).
+	var seed_value: int = forced_seed if forced_seed != 0 else 1 + (randi() & 0x3fffffff)
+	var def: Dictionary = Maps.mission_def(id, seed_value)
 	if def.is_empty():
 		return
 	mode = "mission"
@@ -717,6 +720,7 @@ func net_stop_hosting() -> void:
 
 func net_level_spec() -> Dictionary:
 	return {"map": level.id if level != null else "hub", "tier": level.tier if level != null else 1,
+		"seed": int(level.def.get("seed", 0)) if level != null else 0,
 		"players": players.size(), "mode": mode, "mission": mission_id, "team": Game.team_data()}
 
 
@@ -758,7 +762,7 @@ func net_load_level(spec: Dictionary) -> void:
 	mode = String(spec.get("mode", "hub"))
 	mission_id = String(spec.get("mission", ""))
 	var map_id: String = String(spec.get("map", "hub"))
-	var def: Dictionary = Maps.HUB if map_id == "hub" else Maps.mission(map_id)
+	var def: Dictionary = Maps.HUB if map_id == "hub" else Maps.mission_def(map_id, int(spec.get("seed", 0)))
 	if level != null:
 		world.remove_child(level)
 		level.queue_free()
@@ -909,7 +913,9 @@ func _station(id: String) -> Station:
 func _run_smoke_test() -> void:
 	var p1: GorillaBot = players[0]
 	p1.scripted = true
+	forced_seed = 20261128
 	_smoke_check_maps()
+	_smoke_check_mapgen()
 	_smoke_hub(p1)
 	_smoke_rigs(p1)
 	_smoke_foundry(p1)
@@ -953,6 +959,94 @@ func _smoke_check_maps() -> void:
 			_check(bosses == 1 and exits == 1, "%s has one boss and one extraction pad" % m["id"])
 			_check(Balance.ENEMIES.has(String(m["boss"])), "%s boss exists in Balance" % m["id"])
 			_check(Balance.MISSION_TIER.has(String(m["id"])) and Balance.MISSION_UNLOCK.has(String(m["id"])), "%s has a tier and unlock rule" % m["id"])
+
+
+## Random maps: the same seed gives the same map, seeds differ, seed 0 is the hand-made map, and
+## many seeds per mission all give a sound map (checked here independently of MapGen's own checks).
+func _smoke_check_mapgen() -> void:
+	for m: Dictionary in Maps.MISSIONS:
+		var id: String = String(m["id"])
+		_check(str(Maps.mission_def(id, 0)["rows"]) == str(m["rows"]), "%s: seed 0 is the hand-made map" % id)
+		var a: String = str(Maps.mission_def(id, 1234)["rows"])
+		_check(a == str(Maps.mission_def(id, 1234)["rows"]), "%s: the same seed gives the same map" % id)
+		_check(a != str(Maps.mission_def(id, 98765)["rows"]) and a != str(m["rows"]), "%s: other seeds give other maps" % id)
+		var shown: int = 0
+		for s: int in range(1, 41):
+			var why: String = _mapgen_problem(Maps.mission_def(id, s * 7717))
+			if why != "" and shown < 3:
+				shown += 1
+				_check(false, "%s seed %d: %s" % [id, s * 7717, why])
+
+
+## What's wrong with a generated map, or "".
+func _mapgen_problem(def: Dictionary) -> String:
+	var legend: String = "#w.,=~otc$+PXsgbB"
+	var rows: Array = def["rows"]
+	var h: int = rows.size()
+	var w: int = String(rows[0]).length()
+	var at: Dictionary = {}   # char -> Array of cells
+	for z: int in range(h):
+		var line: String = String(rows[z])
+		if line.length() != w:
+			return "row %d is %d wide, not %d" % [z, line.length(), w]
+		for x: int in range(w):
+			var c: String = line[x]
+			if not legend.contains(c):
+				return "unknown character '%s'" % c
+			if not at.has(c):
+				at[c] = []
+			(at[c] as Array).append(Vector2i(x, z))
+	for one: String in ["P", "B", "X"]:
+		if (at.get(one, []) as Array).size() != 1:
+			return "needs exactly one %s" % one
+	var blocked: String = LevelMap.WALLS + "~" + LevelMap.SOLID_PROPS
+	var walk: Callable = func(x: int, z: int) -> bool:
+		return x >= 0 and z >= 0 and x < w and z < h and not blocked.contains(String(rows[z])[x])
+	var p: Vector2i = (at["P"] as Array)[0]
+	var dist: Dictionary = {p: 0}
+	var queue: Array[Vector2i] = [p]
+	var head: int = 0
+	while head < queue.size():
+		var cur: Vector2i = queue[head]
+		head += 1
+		for d: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+			var n: Vector2i = cur + d
+			if not dist.has(n) and walk.call(n.x, n.y):
+				dist[n] = int(dist[cur]) + 1
+				queue.append(n)
+	var b: Vector2i = (at["B"] as Array)[0]
+	if not dist.has(b) or int(dist[b]) < 20:
+		return "the boss is unreachable or too close to the start"
+	if not dist.has((at["X"] as Array)[0]):
+		return "the extraction pad is unreachable"
+	var robots: int = 0
+	for k: String in ["s", "g", "b", "+"]:
+		for c2: Variant in at.get(k, []):
+			var cell: Vector2i = c2
+			if not dist.has(cell):
+				return "a '%s' at %s can't be reached" % [k, cell]
+			if k != "+":
+				robots += 1
+				if maxi(absi(cell.x - p.x), absi(cell.y - p.y)) < 7:
+					return "a robot starts right next to P"
+	if robots < 12:
+		return "only %d robots" % robots
+	for k2: String in ["c", "$"]:
+		for c3: Variant in at.get(k2, []):
+			var cc: Vector2i = c3
+			var open: bool = false
+			for d2: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+				open = open or dist.has(cc + d2)
+			if not open:
+				return "a crate at %s can't be reached" % cc
+	for dz: int in range(-1, 2):
+		for dx: int in range(1, 5):
+			if not walk.call(p.x + dx, p.y + dz):
+				return "the floor east of P isn't clear"
+		for dx2: int in range(-1, 2):
+			if not walk.call(b.x + dx2, b.y + dz):
+				return "the boss is boxed in"
+	return ""
 
 
 ## Every character model builds, uses the outlined character material, stands about as tall as
@@ -1359,7 +1453,8 @@ func _smoke_net(p1: GorillaBot) -> void:
 	# A client's copy of the level, built from the same map, ends up matching the host's.
 	var mirror: LevelMap = LevelMap.new()
 	mirror.puppet = true
-	mirror.build(Maps.mission("foundry"), level.tier, players.size())
+	_check(int(net_level_spec()["seed"]) == int(level.def["seed"]) and int(level.def["seed"]) != 0, "net: the level spec carries the map seed")
+	mirror.build(Maps.mission_def("foundry", int(net_level_spec()["seed"])), level.tier, players.size())
 	mirror.visible = false
 	world.add_child(mirror)
 	mirror.net_apply_entities(snap2[4])
